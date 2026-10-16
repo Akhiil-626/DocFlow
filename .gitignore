@@ -13,3 +13,11 @@ uploads/
 data/
 *.db
 *.sqlite3
+
+# Test artifacts and temporary files
+*.jar
+*.pdf
+*.png
+*.jpg
+*.jpeg
+cookies*.txt
