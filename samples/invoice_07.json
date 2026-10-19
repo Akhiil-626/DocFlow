@@ -1,0 +1,22 @@
+{
+  "vendor_name": "Green Leaf Landscaping",
+  "vendor_gstin": null,
+  "invoice_number": "GL-55",
+  "invoice_date": "2026-03-20",
+  "currency": "INR",
+  "subtotal": "8000.00",
+  "cgst": "0.00",
+  "sgst": "0.00",
+  "igst": "0.00",
+  "total": "8000.00",
+  "line_items": [
+    {
+      "description": "Campus Tree Pruning and Lawn Maintenance",
+      "quantity": "1.00",
+      "unit_price": "8000.00",
+      "amount": "8000.00"
+    }
+  ],
+  "expected_status": "auto_approved",
+  "expected_issues": []
+}

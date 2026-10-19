@@ -1,0 +1,24 @@
+{
+  "vendor_name": "Conflicted Tax Logistics",
+  "vendor_gstin": "07AAACR4029K1Z5",
+  "invoice_number": "BAD-TAX-004",
+  "invoice_date": "2026-03-04",
+  "currency": "INR",
+  "subtotal": "20000.00",
+  "cgst": "1800.00",
+  "sgst": "1800.00",
+  "igst": "3600.00",
+  "total": "27200.00",
+  "line_items": [
+    {
+      "description": "Freight & Interstate Forwarding",
+      "quantity": "1.00",
+      "unit_price": "20000.00",
+      "amount": "20000.00"
+    }
+  ],
+  "expected_status": "needs_review",
+  "expected_issues": [
+    "TAX_TYPE_CONFLICT"
+  ]
+}

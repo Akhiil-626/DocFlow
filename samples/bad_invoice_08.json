@@ -1,0 +1,24 @@
+{
+  "vendor_name": "Asymmetric Tax Associates",
+  "vendor_gstin": "06AABCS7744E1ZY",
+  "invoice_number": "BAD-ASYM-008",
+  "invoice_date": "2026-03-08",
+  "currency": "INR",
+  "subtotal": "10000.00",
+  "cgst": "900.00",
+  "sgst": "600.00",
+  "igst": "0.00",
+  "total": "11500.00",
+  "line_items": [
+    {
+      "description": "Regulatory Compliance Review",
+      "quantity": "1.00",
+      "unit_price": "10000.00",
+      "amount": "10000.00"
+    }
+  ],
+  "expected_status": "needs_review",
+  "expected_issues": [
+    "CGST_SGST_MISMATCH"
+  ]
+}

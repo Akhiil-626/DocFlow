@@ -16,6 +16,17 @@ services:
       timeout: 5s
       retries: 5
 
+  redis:
+    image: redis:7
+    restart: unless-stopped
+    ports:
+      - "${HOST_REDIS_PORT:-6379}:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
   api:
     build:
       context: .
@@ -24,16 +35,44 @@ services:
     depends_on:
       db:
         condition: service_healthy
+      redis:
+        condition: service_healthy
     env_file:
       - .env
     environment:
       DATABASE_URL: postgresql+psycopg://${DB_USER:-docflow}:${DB_PASSWORD:-docflow_password}@db:5432/${DB_NAME:-docflow}
       TEST_DATABASE_URL: postgresql+psycopg://${DB_USER:-docflow}:${DB_PASSWORD:-docflow_password}@db:5432/docflow_test
+      CELERY_BROKER_URL: redis://redis:6379/0
+      CELERY_RESULT_BACKEND: redis://redis:6379/0
+      REDIS_URL: redis://redis:6379/0
       UPLOAD_DIR: /data/uploads
     volumes:
       - uploads:/data/uploads
     ports:
       - "8000:8000"
+
+  worker:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    command: celery -A app.worker.celery_app worker --loglevel=info
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    env_file:
+      - .env
+    environment:
+      DATABASE_URL: postgresql+psycopg://${DB_USER:-docflow}:${DB_PASSWORD:-docflow_password}@db:5432/${DB_NAME:-docflow}
+      TEST_DATABASE_URL: postgresql+psycopg://${DB_USER:-docflow}:${DB_PASSWORD:-docflow_password}@db:5432/docflow_test
+      CELERY_BROKER_URL: redis://redis:6379/0
+      CELERY_RESULT_BACKEND: redis://redis:6379/0
+      REDIS_URL: redis://redis:6379/0
+      UPLOAD_DIR: /data/uploads
+    volumes:
+      - uploads:/data/uploads
 
 volumes:
   pgdata:

@@ -1,0 +1,22 @@
+{
+  "vendor_name": "Bangalore Precision Tools Corp",
+  "vendor_gstin": "29XYZAB1234L1ZA",
+  "invoice_number": "BPT-9981",
+  "invoice_date": "2026-03-10",
+  "currency": "INR",
+  "subtotal": "40000.00",
+  "cgst": "0.00",
+  "sgst": "0.00",
+  "igst": "7200.00",
+  "total": "47200.00",
+  "line_items": [
+    {
+      "description": "Precision Calibration Sensor Pack",
+      "quantity": "4.00",
+      "unit_price": "10000.00",
+      "amount": "40000.00"
+    }
+  ],
+  "expected_status": "auto_approved",
+  "expected_issues": []
+}

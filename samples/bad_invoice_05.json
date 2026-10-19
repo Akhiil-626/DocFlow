@@ -1,0 +1,24 @@
+{
+  "vendor_name": "Bogus GSTIN Enterprise",
+  "vendor_gstin": "98AABCU9603R1ZM",
+  "invoice_number": "BAD-GSTIN-005",
+  "invoice_date": "2026-03-05",
+  "currency": "INR",
+  "subtotal": "8000.00",
+  "cgst": "720.00",
+  "sgst": "720.00",
+  "igst": "0.00",
+  "total": "9440.00",
+  "line_items": [
+    {
+      "description": "Security Audit Services",
+      "quantity": "1.00",
+      "unit_price": "8000.00",
+      "amount": "8000.00"
+    }
+  ],
+  "expected_status": "needs_review",
+  "expected_issues": [
+    "INVALID_GSTIN"
+  ]
+}

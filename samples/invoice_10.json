@@ -1,0 +1,28 @@
+{
+  "vendor_name": "Global SaaS Platforms Inc",
+  "vendor_gstin": null,
+  "invoice_number": "GSP-INT-4091",
+  "invoice_date": "2026-03-28",
+  "currency": "USD",
+  "subtotal": "1200.00",
+  "cgst": "0.00",
+  "sgst": "0.00",
+  "igst": "0.00",
+  "total": "1200.00",
+  "line_items": [
+    {
+      "description": "Developer Seat Annual Subscription",
+      "quantity": "4.00",
+      "unit_price": "250.00",
+      "amount": "1000.00"
+    },
+    {
+      "description": "Premium SLA Support Add-on",
+      "quantity": "1.00",
+      "unit_price": "200.00",
+      "amount": "200.00"
+    }
+  ],
+  "expected_status": "auto_approved",
+  "expected_issues": []
+}

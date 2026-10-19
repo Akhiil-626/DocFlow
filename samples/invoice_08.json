@@ -1,0 +1,34 @@
+{
+  "vendor_name": "SwiftExpress Logistics Co",
+  "vendor_gstin": "06AABCS7744E1ZY",
+  "invoice_number": "SEL-2026-890",
+  "invoice_date": "2026-03-22",
+  "currency": "INR",
+  "subtotal": "21800.00",
+  "cgst": "0.00",
+  "sgst": "0.00",
+  "igst": "3924.00",
+  "total": "25724.00",
+  "line_items": [
+    {
+      "description": "Express Freight Shipment - Zone A",
+      "quantity": "5.00",
+      "unit_price": "2000.00",
+      "amount": "10000.00"
+    },
+    {
+      "description": "Fragile Cargo Insurance",
+      "quantity": "1.00",
+      "unit_price": "1800.00",
+      "amount": "1800.00"
+    },
+    {
+      "description": "Warehouse Pallet Storage (Weekly)",
+      "quantity": "10.00",
+      "unit_price": "1000.00",
+      "amount": "10000.00"
+    }
+  ],
+  "expected_status": "auto_approved",
+  "expected_issues": []
+}

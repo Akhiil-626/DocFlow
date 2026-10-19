@@ -1,5 +1,6 @@
 import uuid
 from datetime import UTC, datetime
+from decimal import Decimal
 from typing import Any
 
 from sqlalchemy import (
@@ -8,7 +9,10 @@ from sqlalchemy import (
     Boolean,
     DateTime,
     ForeignKey,
+    Integer,
+    Numeric,
     String,
+    Text,
     Uuid,
     func,
 )
@@ -33,7 +37,9 @@ class Organization(Base):
         nullable=False,
     )
 
-    users: Mapped[list["User"]] = relationship("User", back_populates="organization", cascade="all, delete-orphan")
+    users: Mapped[list["User"]] = relationship(
+        "User", back_populates="organization", cascade="all, delete-orphan"
+    )
     documents: Mapped[list["Document"]] = relationship(
         "Document", back_populates="organization", cascade="all, delete-orphan"
     )
@@ -52,9 +58,13 @@ class User(Base):
         nullable=False,
         index=True,
     )
-    email: Mapped[str] = mapped_column(String(255), unique=True, index=True, nullable=False)
+    email: Mapped[str] = mapped_column(
+        String(255), unique=True, index=True, nullable=False
+    )
     password_hash: Mapped[str] = mapped_column(String(255), nullable=False)
-    role: Mapped[str] = mapped_column(String(50), nullable=False)  # admin | reviewer | viewer
+    role: Mapped[str] = mapped_column(
+        String(50), nullable=False
+    )  # admin | reviewer | viewer
     is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
@@ -63,11 +73,15 @@ class User(Base):
         nullable=False,
     )
 
-    organization: Mapped["Organization"] = relationship("Organization", back_populates="users")
+    organization: Mapped["Organization"] = relationship(
+        "Organization", back_populates="users"
+    )
     refresh_tokens: Mapped[list["RefreshToken"]] = relationship(
         "RefreshToken", back_populates="user", cascade="all, delete-orphan"
     )
-    documents: Mapped[list["Document"]] = relationship("Document", back_populates="uploader")
+    documents: Mapped[list["Document"]] = relationship(
+        "Document", back_populates="uploader"
+    )
 
 
 class RefreshToken(Base):
@@ -80,9 +94,15 @@ class RefreshToken(Base):
         nullable=False,
         index=True,
     )
-    token_hash: Mapped[str] = mapped_column(String(255), unique=True, index=True, nullable=False)
-    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
-    revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    token_hash: Mapped[str] = mapped_column(
+        String(255), unique=True, index=True, nullable=False
+    )
+    expires_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False
+    )
+    revoked_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
     replaced_by_id: Mapped[uuid.UUID | None] = mapped_column(
         Uuid,
         ForeignKey("refresh_tokens.id", ondelete="SET NULL"),
@@ -123,6 +143,13 @@ class Document(Base):
         default="uploaded",
         nullable=False,
     )  # uploaded|processing|extracted|needs_review|approved|failed|exported
+    error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
+    processed_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    attempts: Mapped[int] = mapped_column(
+        Integer, default=0, server_default="0", nullable=False
+    )
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         default=utc_now,
@@ -137,8 +164,136 @@ class Document(Base):
         nullable=False,
     )
 
-    organization: Mapped["Organization"] = relationship("Organization", back_populates="documents")
+    review_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+    validated_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+
+    organization: Mapped["Organization"] = relationship(
+        "Organization", back_populates="documents"
+    )
     uploader: Mapped["User | None"] = relationship("User", back_populates="documents")
+    extraction: Mapped["Extraction | None"] = relationship(
+        "Extraction", back_populates="document", uselist=False, cascade="all, delete-orphan"
+    )
+    validation_issues: Mapped[list["ValidationIssue"]] = relationship(
+        "ValidationIssue", back_populates="document", cascade="all, delete-orphan"
+    )
+
+
+class ValidationIssue(Base):
+    __tablename__ = "validation_issues"
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
+    document_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid,
+        ForeignKey("documents.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    org_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid,
+        ForeignKey("organizations.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    code: Mapped[str] = mapped_column(String(50), nullable=False, index=True)
+    severity: Mapped[str] = mapped_column(String(20), nullable=False)  # error | warning
+    field: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    message: Mapped[str] = mapped_column(Text, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        default=utc_now,
+        server_default=func.now(),
+        nullable=False,
+    )
+
+    document: Mapped["Document"] = relationship("Document", back_populates="validation_issues")
+    organization: Mapped["Organization"] = relationship("Organization")
+
+
+class InvalidStatusTransitionError(ValueError):
+    """Raised when an illegal document status transition is attempted."""
+
+    def __init__(self, current_status: str, new_status: str):
+        super().__init__(
+            f"Illegal status transition from '{current_status}' to '{new_status}'"
+        )
+        self.current_status = current_status
+        self.new_status = new_status
+
+
+ALLOWED_STATUS_TRANSITIONS: dict[str, set[str]] = {
+    "uploaded": {"processing"},
+    "processing": {"extracted", "failed"},
+    "extracted": {"auto_approved", "needs_review"},
+    "failed": {"uploaded"},
+}
+
+
+def transition_document_status(document: Document, new_status: str) -> None:
+    """Enforce valid status transitions in a strict state machine."""
+    current_status = document.status
+    allowed = ALLOWED_STATUS_TRANSITIONS.get(current_status, set())
+    if new_status not in allowed:
+        raise InvalidStatusTransitionError(current_status, new_status)
+    document.status = new_status
+
+
+class Extraction(Base):
+    __tablename__ = "extractions"
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
+    document_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid,
+        ForeignKey("documents.id", ondelete="CASCADE"),
+        unique=True,
+        nullable=False,
+        index=True,
+    )
+    org_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid,
+        ForeignKey("organizations.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    data: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False)
+    model: Mapped[str] = mapped_column(String(100), nullable=False)
+    input_tokens: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    output_tokens: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    latency_ms: Mapped[int] = mapped_column(Integer, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        default=utc_now,
+        server_default=func.now(),
+        nullable=False,
+    )
+
+    document: Mapped["Document"] = relationship("Document", back_populates="extraction")
+    organization: Mapped["Organization"] = relationship("Organization")
+    line_items: Mapped[list["LineItem"]] = relationship(
+        "LineItem", back_populates="extraction", cascade="all, delete-orphan"
+    )
+
+
+class LineItem(Base):
+    __tablename__ = "line_items"
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
+    extraction_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid,
+        ForeignKey("extractions.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    description: Mapped[str] = mapped_column(String(500), nullable=False)
+    quantity: Mapped[Decimal] = mapped_column(Numeric(12, 4), nullable=False)
+    unit_price: Mapped[Decimal] = mapped_column(Numeric(12, 2), nullable=False)
+    amount: Mapped[Decimal] = mapped_column(Numeric(12, 2), nullable=False)
+
+    extraction: Mapped["Extraction"] = relationship(
+        "Extraction", back_populates="line_items"
+    )
 
 
 class AuditLog(Base):
@@ -168,4 +323,6 @@ class AuditLog(Base):
         nullable=False,
     )
 
-    organization: Mapped["Organization"] = relationship("Organization", back_populates="audit_logs")
+    organization: Mapped["Organization"] = relationship(
+        "Organization", back_populates="audit_logs"
+    )

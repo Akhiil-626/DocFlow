@@ -1,3 +1,5 @@
+from decimal import Decimal
+
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -15,6 +17,31 @@ class Settings(BaseSettings):
 
     UPLOAD_DIR: str = "./uploads"
     MAX_FILE_SIZE_BYTES: int = 10 * 1024 * 1024  # 10 MB
+
+    # Redis and Celery settings
+    REDIS_URL: str = "redis://localhost:6379/0"
+    CELERY_BROKER_URL: str = "redis://localhost:6379/0"
+    CELERY_RESULT_BACKEND: str = "redis://localhost:6379/0"
+
+    # Validation Settings & Thresholds
+    VALIDATION_TOLERANCE: Decimal = Decimal("1.00")
+    VALIDATION_MAX_INVOICE_AGE_DAYS: int = 365
+    VALIDATION_ALLOWED_TAX_RATES: list[Decimal] = [
+        Decimal("0.00"),
+        Decimal("0.05"),
+        Decimal("0.12"),
+        Decimal("0.18"),
+        Decimal("0.28"),
+    ]
+    VALIDATION_ALLOWED_GST_STATE_CODES: list[str] = [
+        f"{i:02d}" for i in range(1, 38)
+    ] + ["38", "97", "99"]
+    VALIDATION_WARNINGS_ROUTE_TO_REVIEW: bool = True
+
+    # LLM Settings
+    LLM_PROVIDER: str = "mock"  # "mock" or "gemini" or "ollama"
+    LLM_API_KEY: str | None = None
+    LLM_MODEL: str = "gemini-2.5-flash"
 
     model_config = SettingsConfigDict(
         env_file=".env",

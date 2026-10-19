@@ -1,0 +1,22 @@
+{
+  "vendor_name": "CyberShield Defense Labs",
+  "vendor_gstin": "29AAACZ1122K1ZF",
+  "invoice_number": "CSD-2026-99",
+  "invoice_date": "2026-03-25",
+  "currency": "INR",
+  "subtotal": "45000.00",
+  "cgst": "4050.00",
+  "sgst": "4050.00",
+  "igst": "0.00",
+  "total": "53100.00",
+  "line_items": [
+    {
+      "description": "Vulnerability Assessment & Penetration Testing",
+      "quantity": "1.00",
+      "unit_price": "45000.00",
+      "amount": "45000.00"
+    }
+  ],
+  "expected_status": "auto_approved",
+  "expected_issues": []
+}

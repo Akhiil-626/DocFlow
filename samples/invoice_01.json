@@ -1,0 +1,28 @@
+{
+  "vendor_name": "Apex Technologies Pvt Ltd",
+  "vendor_gstin": "27AABCU9603R1ZM",
+  "invoice_number": "INV-2026-001",
+  "invoice_date": "2026-04-15",
+  "currency": "INR",
+  "subtotal": "1000.00",
+  "cgst": "90.00",
+  "sgst": "90.00",
+  "igst": "0.00",
+  "total": "1180.00",
+  "line_items": [
+    {
+      "description": "IT Consulting Services",
+      "quantity": "10.00",
+      "unit_price": "50.00",
+      "amount": "500.00"
+    },
+    {
+      "description": "Cloud Infrastructure Management",
+      "quantity": "2.00",
+      "unit_price": "250.00",
+      "amount": "500.00"
+    }
+  ],
+  "expected_status": "auto_approved",
+  "expected_issues": []
+}

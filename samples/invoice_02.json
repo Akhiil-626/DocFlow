@@ -1,0 +1,34 @@
+{
+  "vendor_name": "DevStudio Solutions LLP",
+  "vendor_gstin": "27AABCU1234D1ZP",
+  "invoice_number": "DS-2026-442",
+  "invoice_date": "2026-03-05",
+  "currency": "INR",
+  "subtotal": "85000.00",
+  "cgst": "7650.00",
+  "sgst": "7650.00",
+  "igst": "0.00",
+  "total": "100300.00",
+  "line_items": [
+    {
+      "description": "Backend API Architecture Design",
+      "quantity": "1.00",
+      "unit_price": "50000.00",
+      "amount": "50000.00"
+    },
+    {
+      "description": "Database Optimization Consulting",
+      "quantity": "2.00",
+      "unit_price": "12500.00",
+      "amount": "25000.00"
+    },
+    {
+      "description": "Automated Deployment Scripting",
+      "quantity": "1.00",
+      "unit_price": "10000.00",
+      "amount": "10000.00"
+    }
+  ],
+  "expected_status": "auto_approved",
+  "expected_issues": []
+}

@@ -66,6 +66,14 @@ TestingSessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=test_
 @pytest.fixture(scope="session", autouse=True)
 def setup_test_db():
     """Create all schema tables in the separate docflow_test PostgreSQL database."""
+    with test_engine.connect() as conn:
+        with conn.begin():
+            conn.execute(
+                text(
+                    "DROP TABLE IF EXISTS validation_issues, line_items, extractions, "
+                    "audit_log, documents, refresh_tokens, users, organizations CASCADE;"
+                )
+            )
     Base.metadata.create_all(bind=test_engine)
     yield
     # Tables remain in docflow_test schema
@@ -75,7 +83,11 @@ def truncate_tables():
     """Truncate all data in docflow_test using CASCADE to preserve schema across tests."""
     with test_engine.connect() as conn:
         with conn.begin():
-            conn.execute(text("TRUNCATE TABLE audit_log, documents, refresh_tokens, users, organizations CASCADE;"))
+            conn.execute(
+                text(
+                    "TRUNCATE TABLE audit_log, validation_issues, line_items, extractions, documents, refresh_tokens, users, organizations CASCADE;"
+                )
+            )
 
 
 @pytest.fixture(autouse=True)

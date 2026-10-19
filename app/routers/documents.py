@@ -1,6 +1,9 @@
 import hashlib
+import logging
 import uuid
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from typing import Any
 
 from fastapi import (
     APIRouter,
@@ -17,9 +20,24 @@ from sqlalchemy.orm import Session
 from app.config import settings
 from app.db import get_db
 from app.deps import get_storage, require_role
-from app.models import AuditLog, Document, User
-from app.schemas import DocumentListResponse, DocumentResponse
+from app.models import (
+    AuditLog,
+    Document,
+    Extraction,
+    User,
+    ValidationIssue,
+    transition_document_status,
+)
+from app.schemas import (
+    DocumentListResponse,
+    DocumentResponse,
+    ExtractionResponse,
+    ReviewQueueResponse,
+)
 from app.storage import Storage
+from app.worker.tasks import process_document
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
@@ -49,24 +67,30 @@ def verify_file_signature(data: bytes) -> tuple[str, str]:
     "",
     response_model=DocumentResponse,
     status_code=status.HTTP_201_CREATED,
-    summary="Upload a document (PDF, PNG, JPEG)",
+    summary="Upload a new document (Admin and Reviewer only)",
 )
 def upload_document(
-    file: UploadFile = File(...),
+    file: UploadFile = File(..., description="Document file (PDF, PNG, JPEG, max 10MB)"),
     current_user: User = Depends(require_role("admin", "reviewer")),
     db: Session = Depends(get_db),
     storage: Storage = Depends(get_storage),
 ) -> Document:
-    """Upload a document, validate signature and size, save via storage, and write audit log."""
-    # 1. Read file content
-    content = file.file.read()
-
-    # 2. Enforce file size limit (Max 10 MB)
-    if len(content) > settings.MAX_FILE_SIZE_BYTES:
-        max_mb = settings.MAX_FILE_SIZE_BYTES // (1024 * 1024)
+    """Upload document, compute SHA-256, store in local storage, save DB metadata, and enqueue extraction."""
+    # 1. Read file bytes
+    try:
+        content = file.file.read()
+    except Exception as err:
+        logger.error("Failed to read uploaded file: %s", err)
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"File size exceeds maximum allowed limit of {max_mb} MB",
+            detail="Failed to read uploaded file content.",
+        ) from err
+
+    # 2. Enforce 10 MB limit
+    if len(content) > settings.MAX_FILE_SIZE_BYTES:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"File exceeds maximum allowed limit of {settings.MAX_FILE_SIZE_BYTES} bytes (10 MB).",
         )
 
     # 3. Verify magic bytes / file signature
@@ -74,6 +98,15 @@ def upload_document(
 
     # 4. Compute SHA-256 hash
     sha256_hash = hashlib.sha256(content).hexdigest()
+
+    # Check for existing exact file duplicate in this organization
+    existing_file_doc = (
+        db.query(Document)
+        .filter(Document.org_id == current_user.org_id, Document.sha256 == sha256_hash)
+        .order_by(Document.created_at.asc())
+        .first()
+    )
+    existing_doc_id = existing_file_doc.id if existing_file_doc else None
 
     # 5. Generate secure document ID and storage key: {org_id}/{document_id}{ext}
     # NEVER use user-supplied filename in storage path
@@ -120,8 +153,22 @@ def upload_document(
     )
     db.add(audit_entry)
 
+    # 9. Commit DB transaction first
     db.commit()
     db.refresh(document)
+
+    # 10. Enqueue background extraction task strictly AFTER commit succeeds
+    try:
+        process_document.delay(str(doc_id))
+    except Exception as err:
+        logger.warning(
+            "Failed to enqueue background processing for document %s: %s",
+            doc_id,
+            err,
+        )
+
+    # Attach existing_document_id for response if an exact duplicate existed
+    document.existing_document_id = existing_doc_id
     return document
 
 
@@ -133,13 +180,28 @@ def upload_document(
 def list_documents(
     limit: int = Query(default=10, ge=1, le=100, description="Items per page"),
     offset: int = Query(default=0, ge=0, description="Offset for pagination"),
+    status: str | None = Query(default=None, description="Filter by status"),
+    has_issues: bool | None = Query(default=None, description="Filter by presence of validation issues"),
     current_user: User = Depends(require_role("admin", "reviewer", "viewer")),
     db: Session = Depends(get_db),
 ) -> dict:
     """Retrieve paginated list of documents isolated to the caller's organization."""
     query = db.query(Document).filter(Document.org_id == current_user.org_id)
+    if status:
+        query = query.filter(Document.status == status)
+    if has_issues is not None:
+        if has_issues:
+            query = query.filter(Document.validation_issues.any())
+        else:
+            query = query.filter(~Document.validation_issues.any())
+
     total = query.count()
-    items = query.order_by(Document.created_at.desc()).offset(offset).limit(limit).all()
+    items = (
+        query.order_by(Document.created_at.desc())
+        .offset(offset)
+        .limit(limit)
+        .all()
+    )
 
     return {
         "items": items,
@@ -147,6 +209,88 @@ def list_documents(
         "limit": limit,
         "offset": offset,
     }
+
+
+# Static subroutes defined BEFORE /{document_id} to prevent path parsing conflicts
+@router.get(
+    "/review-queue",
+    response_model=ReviewQueueResponse,
+    summary="Get review queue documents (Admin and Reviewer only)",
+)
+def get_review_queue(
+    current_user: User = Depends(require_role("admin", "reviewer")),
+    db: Session = Depends(get_db),
+) -> dict:
+    """Retrieve documents in 'needs_review' status for caller's org, oldest first, with issue counts."""
+    docs = (
+        db.query(Document)
+        .filter(
+            Document.org_id == current_user.org_id,
+            Document.status == "needs_review",
+        )
+        .order_by(Document.created_at.asc())
+        .all()
+    )
+
+    items = []
+    for doc in docs:
+        issues = doc.validation_issues or []
+        items.append({
+            "id": doc.id,
+            "original_filename": doc.original_filename,
+            "created_at": doc.created_at,
+            "validated_at": doc.validated_at,
+            "status": doc.status,
+            "review_reason": doc.review_reason,
+            "issue_count": len(issues),
+            "issues": issues,
+        })
+
+    return {
+        "items": items,
+        "total": len(items),
+    }
+
+
+@router.post(
+    "/reset-stale",
+    summary="Reset stale processing documents (Admin only)",
+)
+def reset_stale_documents(
+    stale_minutes: int = Query(default=10, ge=0, le=1440),
+    timeout_seconds: int | None = Query(default=None, ge=0),
+    current_user: User = Depends(require_role("admin")),
+    db: Session = Depends(get_db),
+) -> dict[str, Any]:
+    """Reset documents stuck in 'processing' state back to 'uploaded'."""
+    seconds = timeout_seconds if timeout_seconds is not None else (stale_minutes * 60)
+    cutoff = datetime.now(UTC) - timedelta(seconds=seconds)
+    stale_docs = (
+        db.query(Document)
+        .filter(
+            Document.org_id == current_user.org_id,
+            Document.status == "processing",
+            Document.updated_at <= cutoff,
+        )
+        .all()
+    )
+
+    reset_count = 0
+    for doc in stale_docs:
+        transition_document_status(doc, "failed")
+        transition_document_status(doc, "uploaded")
+        reset_count += 1
+        try:
+            process_document.delay(str(doc.id))
+        except Exception as err:
+            logger.warning(
+                "Failed to re-enqueue stale document %s: %s", doc.id, err
+            )
+
+    if reset_count > 0:
+        db.commit()
+
+    return {"reset_count": reset_count}
 
 
 @router.get(
@@ -160,7 +304,11 @@ def get_document_metadata(
     db: Session = Depends(get_db),
 ) -> Document:
     """Retrieve document metadata. Returns 404 if not found or belongs to another organization."""
-    document = db.query(Document).filter(Document.id == document_id, Document.org_id == current_user.org_id).first()
+    document = (
+        db.query(Document)
+        .filter(Document.id == document_id, Document.org_id == current_user.org_id)
+        .first()
+    )
     if not document:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
@@ -180,7 +328,11 @@ def get_document_file(
     storage: Storage = Depends(get_storage),
 ) -> Response:
     """Stream document binary content. Returns 404 if not found or belongs to another organization."""
-    document = db.query(Document).filter(Document.id == document_id, Document.org_id == current_user.org_id).first()
+    document = (
+        db.query(Document)
+        .filter(Document.id == document_id, Document.org_id == current_user.org_id)
+        .first()
+    )
     if not document:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
@@ -188,20 +340,134 @@ def get_document_file(
         )
 
     try:
-        data = storage.read(document.storage_key)
+        content = storage.read(document.storage_key)
     except FileNotFoundError:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
-            detail="Document file data not found on disk",
+            detail="File content not found in storage",
         )
 
+    safe_filename = Path(document.original_filename).name or "document"
     return Response(
-        content=data,
+        content=content,
         media_type=document.content_type,
-        headers={
-            "Content-Disposition": f'inline; filename="{document.original_filename}"',
-        },
+        headers={"Content-Disposition": f'attachment; filename="{safe_filename}"'},
     )
+
+
+@router.get(
+    "/{document_id}/extraction",
+    response_model=ExtractionResponse,
+    summary="Get document extraction, line items, and validation issues",
+)
+def get_document_extraction(
+    document_id: uuid.UUID,
+    current_user: User = Depends(require_role("admin", "reviewer", "viewer")),
+    db: Session = Depends(get_db),
+) -> dict[str, Any]:
+    """Retrieve extraction, line items, and validation issues for a document."""
+    document = (
+        db.query(Document)
+        .filter(Document.id == document_id, Document.org_id == current_user.org_id)
+        .first()
+    )
+    if not document:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Document not found",
+        )
+
+    extraction = (
+        db.query(Extraction)
+        .filter(
+            Extraction.document_id == document_id,
+            Extraction.org_id == current_user.org_id,
+        )
+        .first()
+    )
+    if not extraction:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Extraction not found for this document",
+        )
+
+    issues = (
+        db.query(ValidationIssue)
+        .filter(ValidationIssue.document_id == document.id)
+        .order_by(ValidationIssue.created_at.asc())
+        .all()
+    )
+
+    return {
+        "id": extraction.id,
+        "document_id": extraction.document_id,
+        "org_id": extraction.org_id,
+        "data": extraction.data,
+        "model": extraction.model,
+        "input_tokens": extraction.input_tokens,
+        "output_tokens": extraction.output_tokens,
+        "latency_ms": extraction.latency_ms,
+        "created_at": extraction.created_at,
+        "line_items": extraction.line_items,
+        "validation_issues": issues,
+    }
+
+
+@router.post(
+    "/{document_id}/reprocess",
+    response_model=DocumentResponse,
+    summary="Reprocess a failed document (Admin and Reviewer only)",
+)
+def reprocess_document(
+    document_id: uuid.UUID,
+    current_user: User = Depends(require_role("admin", "reviewer")),
+    db: Session = Depends(get_db),
+) -> Document:
+    """Reset a failed document to 'uploaded' and re-enqueue for background extraction."""
+    document = (
+        db.query(Document)
+        .filter(Document.id == document_id, Document.org_id == current_user.org_id)
+        .first()
+    )
+    if not document:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Document not found",
+        )
+
+    if document.status != "failed":
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Only failed documents can be reprocessed (current status: '{document.status}')",
+        )
+
+    transition_document_status(document, "uploaded")
+    document.error_message = None
+    document.review_reason = None
+
+    audit_entry = AuditLog(
+        id=uuid.uuid4(),
+        org_id=current_user.org_id,
+        user_id=current_user.id,
+        action="document_reprocessed",
+        entity_type="document",
+        entity_id=document.id,
+        new_value={"status": "uploaded", "reprocessed_by": str(current_user.id)},
+    )
+    db.add(audit_entry)
+    db.commit()
+    db.refresh(document)
+
+    try:
+        process_document.delay(str(document.id))
+    except Exception as err:
+        logger.warning(
+            "Failed to enqueue background reprocessing for document %s: %s",
+            document.id,
+            err,
+        )
+
+    return document
 
 
 @router.delete(
@@ -214,37 +480,45 @@ def delete_document(
     current_user: User = Depends(require_role("admin")),
     db: Session = Depends(get_db),
     storage: Storage = Depends(get_storage),
-) -> None:
-    """Delete document and its physical file. Admin role required. Returns 404 for other orgs."""
-    document = db.query(Document).filter(Document.id == document_id, Document.org_id == current_user.org_id).first()
+) -> Response:
+    """Delete document metadata and storage file. Admin only. Scoped strictly to caller's org."""
+    document = (
+        db.query(Document)
+        .filter(Document.id == document_id, Document.org_id == current_user.org_id)
+        .first()
+    )
     if not document:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Document not found",
         )
 
-    # 1. Delete physical file
-    storage.delete(document.storage_key)
+    try:
+        storage.delete(document.storage_key)
+    except Exception as err:
+        logger.warning(
+            "Storage file deletion failed for key %s: %s",
+            document.storage_key,
+            err,
+        )
 
-    # 2. Record audit log
     audit_entry = AuditLog(
         id=uuid.uuid4(),
         org_id=current_user.org_id,
         user_id=current_user.id,
         action="document_delete",
         entity_type="document",
-        entity_id=document.id,
+        entity_id=document_id,
         old_value={
             "original_filename": document.original_filename,
-            "content_type": document.content_type,
-            "size_bytes": document.size_bytes,
-            "sha256": document.sha256,
             "storage_key": document.storage_key,
             "status": document.status,
         },
+        new_value=None,
     )
     db.add(audit_entry)
 
-    # 3. Delete database record
     db.delete(document)
     db.commit()
+
+    return Response(status_code=status.HTTP_204_NO_CONTENT)

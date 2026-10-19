@@ -1,0 +1,22 @@
+{
+  "vendor_name": "DataMetric Analytics",
+  "vendor_gstin": "33AAECD9012B1ZO",
+  "invoice_number": "DMA-2026-19",
+  "invoice_date": "2026-03-18",
+  "currency": "INR",
+  "subtotal": "37500.00",
+  "cgst": "3375.00",
+  "sgst": "3375.00",
+  "igst": "0.00",
+  "total": "44250.00",
+  "line_items": [
+    {
+      "description": "Data Pipeline Tuning (Hours)",
+      "quantity": "7.50",
+      "unit_price": "5000.00",
+      "amount": "37500.00"
+    }
+  ],
+  "expected_status": "auto_approved",
+  "expected_issues": []
+}

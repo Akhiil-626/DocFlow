@@ -1,0 +1,28 @@
+{
+  "vendor_name": "Metro Office Supplies India",
+  "vendor_gstin": "24AABCM8821F1ZX",
+  "invoice_number": "MOS-8812",
+  "invoice_date": "2026-03-15",
+  "currency": "INR",
+  "subtotal": "6200.00",
+  "cgst": "558.00",
+  "sgst": "558.00",
+  "igst": "0.00",
+  "total": "7316.00",
+  "line_items": [
+    {
+      "description": "Heavy Duty Ergonomic Office Chairs",
+      "quantity": "2.00",
+      "unit_price": "2500.00",
+      "amount": "5000.00"
+    },
+    {
+      "description": "Reams of Recycled Printer Paper",
+      "quantity": "4.00",
+      "unit_price": "300.00",
+      "amount": "1200.00"
+    }
+  ],
+  "expected_status": "auto_approved",
+  "expected_issues": []
+}

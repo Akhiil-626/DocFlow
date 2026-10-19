@@ -1,0 +1,25 @@
+{
+  "vendor_name": "Negative Balance Traders",
+  "vendor_gstin": "33AAECD9012B1ZO",
+  "invoice_number": "BAD-NEG-007",
+  "invoice_date": "2026-03-07",
+  "currency": "INR",
+  "subtotal": "5000.00",
+  "cgst": "450.00",
+  "sgst": "450.00",
+  "igst": "0.00",
+  "total": "5900.00",
+  "line_items": [
+    {
+      "description": "Erroneous Rebate Adjustment",
+      "quantity": "1.00",
+      "unit_price": "-500.00",
+      "amount": "-500.00"
+    }
+  ],
+  "expected_status": "needs_review",
+  "expected_issues": [
+    "NEGATIVE_AMOUNT",
+    "LINE_ITEMS_SUM_MISMATCH"
+  ]
+}

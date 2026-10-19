@@ -1,0 +1,24 @@
+{
+  "vendor_name": "Calculus Glitch Labs",
+  "vendor_gstin": "29AABCU9603R1ZM",
+  "invoice_number": "BAD-TOTAL-001",
+  "invoice_date": "2026-03-01",
+  "currency": "INR",
+  "subtotal": "10000.00",
+  "cgst": "900.00",
+  "sgst": "900.00",
+  "igst": "0.00",
+  "total": "15000.00",
+  "line_items": [
+    {
+      "description": "Server Maintenance Contract",
+      "quantity": "1.00",
+      "unit_price": "10000.00",
+      "amount": "10000.00"
+    }
+  ],
+  "expected_status": "needs_review",
+  "expected_issues": [
+    "TOTAL_MISMATCH"
+  ]
+}

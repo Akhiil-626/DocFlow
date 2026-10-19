@@ -1,0 +1,24 @@
+{
+  "vendor_name": "Line Item Faulty Ltd",
+  "vendor_gstin": "27AABCU1234D1ZP",
+  "invoice_number": "BAD-LINE-002",
+  "invoice_date": "2026-03-02",
+  "currency": "INR",
+  "subtotal": "12000.00",
+  "cgst": "1080.00",
+  "sgst": "1080.00",
+  "igst": "0.00",
+  "total": "14160.00",
+  "line_items": [
+    {
+      "description": "2 Developer Workstations at 5000 each",
+      "quantity": "2.00",
+      "unit_price": "5000.00",
+      "amount": "12000.00"
+    }
+  ],
+  "expected_status": "needs_review",
+  "expected_issues": [
+    "LINE_ITEM_AMOUNT_MISMATCH"
+  ]
+}

@@ -1,0 +1,24 @@
+{
+  "vendor_name": "Time Traveler Supplies",
+  "vendor_gstin": "24AABCM8821F1ZX",
+  "invoice_number": "BAD-FUTURE-006",
+  "invoice_date": "2029-01-01",
+  "currency": "INR",
+  "subtotal": "5000.00",
+  "cgst": "450.00",
+  "sgst": "450.00",
+  "igst": "0.00",
+  "total": "5900.00",
+  "line_items": [
+    {
+      "description": "Futuristic Component Delivery",
+      "quantity": "1.00",
+      "unit_price": "5000.00",
+      "amount": "5000.00"
+    }
+  ],
+  "expected_status": "needs_review",
+  "expected_issues": [
+    "FUTURE_INVOICE_DATE"
+  ]
+}
