@@ -38,6 +38,28 @@ DocFlow is a multi-tenant invoice-processing backend built with FastAPI, SQLAlch
   - `POST /documents/{id}/reprocess`: re-enqueue failed documents.
   - `POST /documents/reset-stale`: administrative recovery for documents stuck in `processing`.
 
+### Week 4A: Human Review Workflow & Deterministic Exports
+- **Immutable LLM Provenance & Optimistic Concurrency**:
+  - Original model extraction is preserved immutable in `extractions.original_data` (JSONB) and never modified after initial creation.
+  - Human corrections increment `extractions.version` and update `extractions.data` and `line_items`.
+  - Optimistic locking: `PATCH /documents/{id}/extraction` requires current `version` in body and returns `409 Conflict` on concurrent collisions.
+  - Every edit re-runs validation and duplicate detection, replacing `validation_issues`, and logs full field-level diffs in `audit_log`.
+- **Review Decision Workflows**:
+  - `POST /documents/{id}/approve`: transitions `needs_review` -> `approved`. If unresolved error issues exist, requires `override=True` and a non-empty `reason`.
+  - `POST /documents/{id}/reject`: transitions `needs_review` -> `rejected` with mandatory human reason.
+  - `POST /documents/{id}/reopen`: Admin-only transition returning `approved` or `rejected` documents back to `needs_review` (strictly forbidden once exported).
+  - Race condition safe: approvals and rejections utilize row-level locking (`SELECT ... FOR UPDATE`), preventing duplicate actions.
+- **Audit Trail & Document History**:
+  - `GET /documents/{id}/history`: chronological paginated audit log of state changes, uploads, and extraction diffs.
+  - `GET /audit-log`: Admin-only organization audit trail filterable by entity type, entity ID, user, action, and date range.
+- **Accounting & ERP Exports**:
+  - `POST /exports`: atomic batch creation locking eligible documents (`approved` and `auto_approved`), transitioning them to terminal `exported` status.
+  - `GET /exports/{id}/download?type=summary_csv`: header-level invoice CSV with formula injection defense (`'`) and UTF-8 BOM (`\xef\xbb\xbf`) for Microsoft Excel.
+  - `GET /exports/{id}/download?type=line_items_csv`: flattened line items CSV with document ID and invoice metadata.
+  - `GET /exports/{id}/download?type=json`: deterministic pretty-printed JSON export.
+- **Extended Analytics (`GET /stats`)**:
+  - Tracks `documents_reviewed`, `approved_count`, `rejected_count`, `correction_rate`, and `top_corrected_fields` across all documents in the organization.
+
 ### Week 3: Deterministic Validation, Duplicate Detection & Review Queue Routing
 - **Pure Deterministic Validation Engine (`app/validation.py`)**:
   - Pure function `validate_extraction(extraction, context) -> list[Issue]`, free of database and network calls for high-speed unit testing.
@@ -147,28 +169,43 @@ DocFlow enforces a strict status lifecycle via `transition_document_status(docum
 
 ```
                       ┌───────────────┐
-                      │   uploaded    │◄───────────────┐
-                      └───────┬───────┘                │
-                              │ (Worker picks up)      │
-                              ▼                        │ (Reprocess /
-                      ┌───────────────┐                │  Reset Stale)
-                      │  processing   │                │
-                      └───┬───────┬───┘                │
-                          │       │                    │
-            (Fatal Error) │       │ (LLM Success)      │
-                          ▼       ▼                    │
-     ┌──────────────────────┐   ┌───────────────┐      │
-     │        failed        ├───┤   extracted   │      │
-     └──────────────────────┘   └───┬───────┬───┘      │
-                 ▲                  │       │          │
-                 │                  │       │          │
+                      │   uploaded    │◄────────────────┐
+                      └───────┬───────┘                 │
+                              │ (Worker picks up)       │
+                              ▼                         │ (Reprocess /
+                      ┌───────────────┐                 │  Reset Stale)
+                      │  processing   │                 │
+                      └───┬───────┬───┘                 │
+                          │       │                     │
+            (Fatal Error) │       │ (LLM Success)       │
+                          ▼       ▼                     │
+     ┌──────────────────────┐   ┌───────────────┐       │
+     │        failed        ├───┤   extracted   │       │
+     └──────────────────────┘   └───┬───────┬───┘       │
+                 ▲                  │       │           │
+                 │                  │       │           │
                  │ (0 Issues)       │       │ (>0 Issues)
-                 │                  ▼       ▼          │
+                 │                  ▼       ▼           │
                  │   ┌────────────────┐   ┌───────────────┐
-                 │   │ auto_approved  │   │ needs_review  │
-                 │   └────────────────┘   └───────┬───────┘
-                 │                                │
-                 └────────────────────────────────┘
+                 │   │ auto_approved  │   │ needs_review  │◄───────┐
+                 │   └───────┬────────┘   └───┬───────┬───┘        │
+                 │           │                │       │            │
+                 └───────────┼────────────────┘       │            │
+                             │         ┌──────────────┘            │
+                             │         │                           │
+                             │         ▼                           │
+                             │   ┌───────────────┐                 │ (Reopen: Admin Only,
+                             │   │   rejected    ├─────────────────┤  Forbidden once
+                             │   └───────────────┘                 │  exported)
+                             ▼                                     │
+                     ┌───────────────┐                             │
+                     │   approved    ├─────────────────────────────┘
+                     └───────┬───────┘
+                             │
+                             ▼ (Batch Export)
+                     ┌───────────────┐
+                     │   exported    │ (Terminal)
+                     └───────────────┘
 ```
 
 | Source Status | Allowed Target Statuses | Trigger / Responsible Component |
@@ -179,6 +216,30 @@ DocFlow enforces a strict status lifecycle via `transition_document_status(docum
 | `extracted` | `auto_approved` | Pure validation + duplicate check find 0 blocking issues |
 | `extracted` | `needs_review` | Pure validation or duplicate check detect errors/warnings |
 | `failed` | `uploaded` | Manual `POST /reprocess` or admin `POST /reset-stale` |
+| `needs_review` | `approved` | Human approval (`POST /documents/{id}/approve`) |
+| `needs_review` | `rejected` | Human rejection with reason (`POST /documents/{id}/reject`) |
+| `approved` | `exported` | Batch export creation (`POST /exports`) |
+| `auto_approved` | `exported` | Batch export creation (`POST /exports`) |
+| `approved` | `needs_review` | Admin reopening (`POST /documents/{id}/reopen`) |
+| `rejected` | `needs_review` | Admin reopening (`POST /documents/{id}/reopen`) |
+| `exported` | *None* | **Terminal status** (cannot be reopened or re-exported) |
+
+---
+
+## Role-Based Access Control (RBAC) Matrix
+
+| Endpoint | Method | Admin | Reviewer | Viewer | Notes |
+| :--- | :--- | :---: | :---: | :---: | :--- |
+| `/documents/{id}/extraction` | `PATCH` | ✅ | ✅ | ❌ | Allowed only when status is `needs_review`; requires version match |
+| `/documents/{id}/approve` | `POST` | ✅ | ✅ | ❌ | Requires `override=true` & reason if errors exist |
+| `/documents/{id}/reject` | `POST` | ✅ | ✅ | ❌ | Requires non-empty reason |
+| `/documents/{id}/reopen` | `POST` | ✅ | ❌ | ❌ | Blocked once document is `exported` (HTTP 409) |
+| `/documents/{id}/history` | `GET` | ✅ | ✅ | ✅ | Paginated audit trail for document |
+| `/exports` | `POST` | ✅ | ✅ | ❌ | Atomically transitions eligible docs to `exported` |
+| `/exports` | `GET` | ✅ | ✅ | ✅ | List export batches |
+| `/exports/{id}/download` | `GET` | ✅ | ✅ | ✅ | Download summary CSV, line items CSV, or JSON |
+| `/audit-log` | `GET` | ✅ | ❌ | ❌ | Org audit log with multi-field filtering |
+| `/stats` | `GET` | ✅ | ✅ | ✅ | Review metrics, correction rates, and top corrected fields |
 
 ---
 
@@ -345,4 +406,114 @@ Admin can reset any document stuck in `processing` back to `uploaded`:
 ```bash
 curl -X POST "http://localhost:8000/documents/reset-stale?stale_minutes=10" \
   -H "Authorization: Bearer <JWT_TOKEN>"
+```
+
+### 11. Edit Extraction (Needs Review Only)
+Update header fields or line items with optimistic concurrency control (`version` required):
+```bash
+curl -X PATCH http://localhost:8000/documents/<DOCUMENT_UUID>/extraction \
+  -H "Authorization: Bearer <JWT_TOKEN>" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "version": 1,
+    "vendor_name": "Apex Technologies Pvt Ltd",
+    "total": "1180.00",
+    "note": "Corrected vendor name and total per paper PO"
+  }'
+```
+
+### 12. Approve an Invoice
+Transition an invoice from `needs_review` to `approved`:
+```bash
+# Standard approval (valid when 0 unresolved error issues)
+curl -X POST http://localhost:8000/documents/<DOCUMENT_UUID>/approve \
+  -H "Authorization: Bearer <JWT_TOKEN>" \
+  -H "Content-Type: application/json" \
+  -d '{}'
+
+# Approval with override (required when unresolved error issues exist)
+curl -X POST http://localhost:8000/documents/<DOCUMENT_UUID>/approve \
+  -H "Authorization: Bearer <JWT_TOKEN>" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "override": true,
+    "reason": "Total mismatch of 0.50 accepted as vendor roundoff discrepancy"
+  }'
+```
+
+### 13. Reject an Invoice
+Transition an invoice from `needs_review` to `rejected` with mandatory human explanation:
+```bash
+curl -X POST http://localhost:8000/documents/<DOCUMENT_UUID>/reject \
+  -H "Authorization: Bearer <JWT_TOKEN>" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "reason": "Duplicate billing against PO-99824; already paid in March"
+  }'
+```
+
+### 14. Reopen Document (Admin Only)
+Reopen an `approved` or `rejected` invoice back to `needs_review` (strictly forbidden once exported):
+```bash
+curl -X POST http://localhost:8000/documents/<DOCUMENT_UUID>/reopen \
+  -H "Authorization: Bearer <ADMIN_JWT_TOKEN>" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "reason": "Reopened following vendor revised credit note"
+  }'
+```
+
+### 15. View Document History
+Retrieve a chronological audit log of all human edits, approvals, and rejections:
+```bash
+curl -X GET "http://localhost:8000/documents/<DOCUMENT_UUID>/history?limit=50" \
+  -H "Authorization: Bearer <JWT_TOKEN>"
+```
+
+### 16. Create Batch Export
+Atomically export all currently `approved` and `auto_approved` invoices:
+```bash
+curl -X POST http://localhost:8000/exports \
+  -H "Authorization: Bearer <JWT_TOKEN>" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "format": "csv"
+  }'
+```
+Response:
+```json
+{
+  "id": "76ec4ecb-f117-48f8-b328-3e53d53bce7c",
+  "org_id": "...",
+  "created_by": "...",
+  "format": "csv",
+  "row_count": 5,
+  "created_at": "..."
+}
+```
+
+### 17. Download Export Files
+Download batch summary CSV, flattened line items CSV, or JSON:
+```bash
+# 1. Summary CSV (UTF-8 BOM with formula injection protection)
+curl -X GET "http://localhost:8000/exports/<EXPORT_UUID>/download?type=summary_csv" \
+  -H "Authorization: Bearer <JWT_TOKEN>" \
+  -o export_summary.csv
+
+# 2. Line Items CSV
+curl -X GET "http://localhost:8000/exports/<EXPORT_UUID>/download?type=line_items_csv" \
+  -H "Authorization: Bearer <JWT_TOKEN>" \
+  -o export_line_items.csv
+
+# 3. Full JSON Export
+curl -X GET "http://localhost:8000/exports/<EXPORT_UUID>/download?type=json" \
+  -H "Authorization: Bearer <JWT_TOKEN>" \
+  -o export_bundle.json
+```
+
+### 18. Filter Audit Log (Admin Only)
+Search organization-wide audit trails by action, entity type, user, or date range:
+```bash
+curl -X GET "http://localhost:8000/audit-log?action=edit_extraction&limit=25" \
+  -H "Authorization: Bearer <ADMIN_JWT_TOKEN>"
 ```

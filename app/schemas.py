@@ -82,13 +82,88 @@ class ValidationIssueResponse(BaseModel):
     created_at: datetime
 
 
+class ExtractionPatchRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    version: int = Field(..., description="Current extraction version for optimistic concurrency")
+    vendor_name: str | None = Field(default=None, min_length=1)
+    vendor_gstin: str | None = None
+    invoice_number: str | None = Field(default=None, min_length=1)
+    invoice_date: date | str | None = None
+    currency: str | None = None
+    subtotal: Decimal | None = None
+    cgst: Decimal | None = None
+    sgst: Decimal | None = None
+    igst: Decimal | None = None
+    total: Decimal | None = None
+    line_items: list[InvoiceLineItemSchema] | None = None
+    note: str | None = None
+
+
+class ApproveRequest(BaseModel):
+    override: bool = False
+    reason: str | None = None
+
+
+class RejectRequest(BaseModel):
+    reason: str = Field(..., min_length=1, description="Reason for rejecting the document")
+
+
+class ExportCreateRequest(BaseModel):
+    format: Literal["csv", "json"] = Field(..., description="Export format: csv or json")
+
+
+class ExportBatchResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: uuid.UUID
+    org_id: uuid.UUID
+    created_by: uuid.UUID | None
+    format: str
+    row_count: int
+    created_at: datetime
+
+
+class ExportBatchListResponse(BaseModel):
+    items: list[ExportBatchResponse]
+    total: int
+    limit: int
+    offset: int
+
+
+class AuditLogResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: uuid.UUID
+    org_id: uuid.UUID
+    user_id: uuid.UUID | None
+    actor_email: str = "system"
+    action: str
+    entity_type: str
+    entity_id: uuid.UUID | None
+    old_value: dict[str, Any] | None = None
+    new_value: dict[str, Any] | None = None
+    created_at: datetime
+
+
+class AuditLogListResponse(BaseModel):
+    items: list[AuditLogResponse]
+    total: int
+    limit: int
+    offset: int
+
+
 class ExtractionResponse(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
     id: uuid.UUID
     document_id: uuid.UUID
     org_id: uuid.UUID
+    original_data: dict[str, Any] = Field(default_factory=dict)
     data: dict[str, Any]
+    version: int = 1
+    edited_at: datetime | None = None
+    edited_by: uuid.UUID | None = None
     model: str
     input_tokens: int | None = None
     output_tokens: int | None = None
@@ -113,6 +188,11 @@ class DocumentResponse(BaseModel):
     error_message: str | None = None
     review_reason: str | None = None
     validated_at: datetime | None = None
+    reviewed_by: uuid.UUID | None = None
+    reviewed_at: datetime | None = None
+    review_note: str | None = None
+    export_batch_id: uuid.UUID | None = None
+    exported_at: datetime | None = None
     processed_at: datetime | None = None
     attempts: int = 0
     existing_document_id: uuid.UUID | None = None
@@ -145,8 +225,18 @@ class ReviewQueueResponse(BaseModel):
     total: int
 
 
+class TopFieldCorrection(BaseModel):
+    field: str
+    count: int
+
+
 class StatsResponse(BaseModel):
     counts: dict[str, int]
     total: int
     auto_approval_rate: float
+    documents_reviewed: int = 0
+    approved_count: int = 0
+    rejected_count: int = 0
+    correction_rate: float = 0.0
+    top_corrected_fields: list[TopFieldCorrection] = Field(default_factory=list)
 

@@ -125,6 +125,8 @@ def process_document(
             )
             if existing_extraction:
                 extraction_id = existing_extraction.id
+                if existing_extraction.original_data is None:
+                    existing_extraction.original_data = dict(extraction_data)
                 existing_extraction.data = extraction_data
                 existing_extraction.model = usage.get("model", "unknown")
                 existing_extraction.input_tokens = usage.get("input_tokens")
@@ -139,7 +141,9 @@ def process_document(
                     id=extraction_id,
                     document_id=doc_uuid,
                     org_id=document.org_id,
+                    original_data=dict(extraction_data),
                     data=extraction_data,
+                    version=1,
                     model=usage.get("model", "unknown"),
                     input_tokens=usage.get("input_tokens"),
                     output_tokens=usage.get("output_tokens"),

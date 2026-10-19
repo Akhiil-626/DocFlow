@@ -80,7 +80,9 @@ class User(Base):
         "RefreshToken", back_populates="user", cascade="all, delete-orphan"
     )
     documents: Mapped[list["Document"]] = relationship(
-        "Document", back_populates="uploader"
+        "Document",
+        back_populates="uploader",
+        foreign_keys="[Document.uploaded_by]",
     )
 
 
@@ -118,6 +120,39 @@ class RefreshToken(Base):
     user: Mapped["User"] = relationship("User", back_populates="refresh_tokens")
 
 
+class ExportBatch(Base):
+    __tablename__ = "export_batches"
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
+    org_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid,
+        ForeignKey("organizations.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    created_by: Mapped[uuid.UUID | None] = mapped_column(
+        Uuid,
+        ForeignKey("users.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    format: Mapped[str] = mapped_column(String(20), nullable=False)  # csv | json
+    row_count: Mapped[int] = mapped_column(
+        Integer, default=0, server_default="0", nullable=False
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        default=utc_now,
+        server_default=func.now(),
+        nullable=False,
+    )
+
+    organization: Mapped["Organization"] = relationship("Organization")
+    creator: Mapped["User | None"] = relationship("User", foreign_keys=[created_by])
+    documents: Mapped[list["Document"]] = relationship(
+        "Document", back_populates="export_batch"
+    )
+
+
 class Document(Base):
     __tablename__ = "documents"
 
@@ -142,7 +177,7 @@ class Document(Base):
         String(50),
         default="uploaded",
         nullable=False,
-    )  # uploaded|processing|extracted|needs_review|approved|failed|exported
+    )  # uploaded|processing|extracted|needs_review|approved|rejected|failed|exported
     error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
     processed_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
@@ -168,11 +203,37 @@ class Document(Base):
     validated_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
     )
+    reviewed_by: Mapped[uuid.UUID | None] = mapped_column(
+        Uuid,
+        ForeignKey("users.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    reviewed_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    review_note: Mapped[str | None] = mapped_column(Text, nullable=True)
+    export_batch_id: Mapped[uuid.UUID | None] = mapped_column(
+        Uuid,
+        ForeignKey("export_batches.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
+    exported_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
 
     organization: Mapped["Organization"] = relationship(
         "Organization", back_populates="documents"
     )
-    uploader: Mapped["User | None"] = relationship("User", back_populates="documents")
+    uploader: Mapped["User | None"] = relationship(
+        "User", back_populates="documents", foreign_keys=[uploaded_by]
+    )
+    reviewer: Mapped["User | None"] = relationship(
+        "User", foreign_keys=[reviewed_by]
+    )
+    export_batch: Mapped["ExportBatch | None"] = relationship(
+        "ExportBatch", back_populates="documents"
+    )
     extraction: Mapped["Extraction | None"] = relationship(
         "Extraction", back_populates="document", uselist=False, cascade="all, delete-orphan"
     )
@@ -227,7 +288,12 @@ ALLOWED_STATUS_TRANSITIONS: dict[str, set[str]] = {
     "uploaded": {"processing"},
     "processing": {"extracted", "failed"},
     "extracted": {"auto_approved", "needs_review"},
+    "needs_review": {"approved", "rejected"},
+    "approved": {"exported", "needs_review"},
+    "rejected": {"needs_review"},
+    "auto_approved": {"exported"},
     "failed": {"uploaded"},
+    "exported": set(),
 }
 
 
@@ -257,7 +323,19 @@ class Extraction(Base):
         nullable=False,
         index=True,
     )
+    original_data: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False)
     data: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False)
+    version: Mapped[int] = mapped_column(
+        Integer, default=1, server_default="1", nullable=False
+    )
+    edited_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    edited_by: Mapped[uuid.UUID | None] = mapped_column(
+        Uuid,
+        ForeignKey("users.id", ondelete="SET NULL"),
+        nullable=True,
+    )
     model: Mapped[str] = mapped_column(String(100), nullable=False)
     input_tokens: Mapped[int | None] = mapped_column(Integer, nullable=True)
     output_tokens: Mapped[int | None] = mapped_column(Integer, nullable=True)
@@ -271,6 +349,7 @@ class Extraction(Base):
 
     document: Mapped["Document"] = relationship("Document", back_populates="extraction")
     organization: Mapped["Organization"] = relationship("Organization")
+    editor: Mapped["User | None"] = relationship("User", foreign_keys=[edited_by])
     line_items: Mapped[list["LineItem"]] = relationship(
         "LineItem", back_populates="extraction", cascade="all, delete-orphan"
     )
