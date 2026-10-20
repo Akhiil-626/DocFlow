@@ -39,4 +39,29 @@ export const handlers = [
   http.post('http://localhost:8000/auth/logout', () => {
     return HttpResponse.json({ detail: 'Successfully logged out' });
   }),
+
+  http.get('http://localhost:8000/stats', () => {
+    return HttpResponse.json({
+      counts: {
+        auto_approved: 5,
+        needs_review: 2,
+        approved: 3,
+        rejected: 1,
+        exported: 0,
+        uploaded: 0,
+        processing: 0,
+        failed: 1,
+      },
+      total: 12,
+      auto_approval_rate: 0.4167,
+      documents_reviewed: 4,
+      approved_count: 3,
+      rejected_count: 1,
+      correction_rate: 0.25,
+      top_corrected_fields: [
+        { field: 'total', count: 3 },
+        { field: 'vendor_name', count: 2 },
+      ],
+    });
+  }),
 ];
