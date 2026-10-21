@@ -67,7 +67,7 @@ describe('Batch 1: Documents, Upload, Review Queue & Dashboard', () => {
     );
 
     // 1. Visit /documents as viewer
-    renderAppWithAuth('/documents', 'viewer');
+    const { unmount } = renderAppWithAuth('/documents', 'viewer');
 
     await waitFor(() => {
       expect(screen.getByRole('heading', { name: /Documents/i })).toBeInTheDocument();
@@ -76,6 +76,7 @@ describe('Batch 1: Documents, Upload, Review Queue & Dashboard', () => {
     // Upload Invoice button must NOT exist for viewer
     expect(screen.queryByTestId('open-upload-btn')).not.toBeInTheDocument();
     expect(screen.queryByText(/Upload Invoice/i)).not.toBeInTheDocument();
+    unmount();
 
     // 2. Direct URL attempt to /review as viewer should be blocked by RoleRoute
     renderAppWithAuth('/review', 'viewer');

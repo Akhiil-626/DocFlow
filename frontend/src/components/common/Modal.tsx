@@ -21,6 +21,8 @@ export const Modal: React.FC<ModalProps> = ({
 }) => {
   const modalRef = useRef<HTMLDivElement>(null);
   const previouslyFocusedElement = useRef<HTMLElement | null>(null);
+  const onCloseRef = useRef(onClose);
+  onCloseRef.current = onClose;
 
   useEffect(() => {
     if (!isOpen) return;
@@ -30,7 +32,7 @@ export const Modal: React.FC<ModalProps> = ({
     const handleKeyDown = (e: KeyboardEvent) => {
       if (e.key === 'Escape') {
         e.preventDefault();
-        onClose();
+        onCloseRef.current();
         return;
       }
 
@@ -60,7 +62,7 @@ export const Modal: React.FC<ModalProps> = ({
 
     document.addEventListener('keydown', handleKeyDown);
 
-    // Initial focus into modal
+    // Initial focus into modal on open
     const focusables = modalRef.current?.querySelectorAll<HTMLElement>(
       'button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])'
     );
@@ -72,7 +74,7 @@ export const Modal: React.FC<ModalProps> = ({
       document.removeEventListener('keydown', handleKeyDown);
       previouslyFocusedElement.current?.focus();
     };
-  }, [isOpen, onClose]);
+  }, [isOpen]);
 
   if (!isOpen) return null;
 
