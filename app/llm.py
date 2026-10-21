@@ -274,9 +274,17 @@ class GeminiLLMClient(LLMClient):
 class OllamaLLMClient(LLMClient):
     """Ollama local LLM client."""
 
-    def __init__(self, base_url: str = "http://localhost:11434", model_name: str = "llama3"):
-        self.base_url = base_url.rstrip("/")
-        self.model_name = model_name
+    def __init__(
+        self,
+        base_url: str | None = None,
+        model_name: str | None = None,
+        timeout_seconds: float | None = None,
+        num_ctx: int | None = None,
+    ):
+        self.base_url = (base_url or settings.OLLAMA_BASE_URL).rstrip("/")
+        self.model_name = model_name or settings.LLM_MODEL or "llama3"
+        self.timeout_seconds = timeout_seconds if timeout_seconds is not None else settings.OLLAMA_TIMEOUT_SECONDS
+        self.num_ctx = num_ctx if num_ctx is not None else settings.OLLAMA_NUM_CTX
 
     def _call_api(self, prompt: str) -> tuple[str, int | None, int | None]:
         import httpx
@@ -288,9 +296,13 @@ class OllamaLLMClient(LLMClient):
             "stream": False,
             "format": "json",
             "system": SYSTEM_INSTRUCTION,
+            "options": {
+                "temperature": 0,
+                "num_ctx": self.num_ctx,
+            },
         }
         try:
-            resp = httpx.post(url, json=payload, timeout=60.0)
+            resp = httpx.post(url, json=payload, timeout=self.timeout_seconds)
             if resp.status_code != 200:
                 raise TransientLLMError(f"Ollama returned HTTP status {resp.status_code}")
             data = resp.json()
@@ -317,6 +329,7 @@ class OllamaLLMClient(LLMClient):
                 "input_tokens": in_tok,
                 "output_tokens": out_tok,
                 "latency_ms": latency_ms,
+                "repair_retries": 0,
             }
             logger.info("Ollama extraction succeeded in %d ms", latency_ms)
             return validated, usage
@@ -338,6 +351,7 @@ class OllamaLLMClient(LLMClient):
                 "input_tokens": total_in_tok,
                 "output_tokens": total_out_tok,
                 "latency_ms": latency_ms,
+                "repair_retries": 1,
             }
             logger.info("Ollama extraction succeeded on repair attempt in %d ms", latency_ms)
             return validated, usage
@@ -356,6 +370,11 @@ def get_llm_client() -> LLMClient:
             return MockLLMClient(model_name="mock-model")
         return GeminiLLMClient(api_key=settings.LLM_API_KEY, model_name=settings.LLM_MODEL)
     if provider == "ollama":
-        return OllamaLLMClient(model_name=settings.LLM_MODEL or "llama3")
+        return OllamaLLMClient(
+            base_url=settings.OLLAMA_BASE_URL,
+            model_name=settings.LLM_MODEL or "llama3",
+            timeout_seconds=settings.OLLAMA_TIMEOUT_SECONDS,
+            num_ctx=settings.OLLAMA_NUM_CTX,
+        )
 
     return MockLLMClient(model_name="mock-model")

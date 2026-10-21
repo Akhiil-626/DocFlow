@@ -60,6 +60,16 @@ DocFlow is a multi-tenant invoice-processing backend built with FastAPI, SQLAlch
 - **Extended Analytics (`GET /stats`)**:
   - Tracks `documents_reviewed`, `approved_count`, `rejected_count`, `correction_rate`, and `top_corrected_fields` across all documents in the organization.
 
+### Week 4B: React + TypeScript Frontend Single-Page Application
+- **Tech Stack**: Vite + React 18 + TypeScript (strict mode), Tailwind CSS, TanStack Query, and typed openapi-fetch client generated from `frontend/openapi.json`.
+- **Security First**: In-memory access token storage, HttpOnly refresh cookie with single-flight automatic session rotation, authenticated blob file streaming, and plain text escaping for all document-derived data.
+- **Operator Workspaces**:
+  - `/documents`: Paginated invoices, status filters, drag-and-drop upload, exact-duplicate alerts, and reprocess actions.
+  - `/review`: FIFO human review queue.
+  - `/documents/:id`: Desktop split-layout with PDF/image blob preview, issue navigation, string decimal editing, optimistic 409 conflict handling, dirty navigation guards, version comparison, and Approve/Reject/Reopen flows.
+  - `/exports`: Batch listing, CSV/JSON batch creation, and authenticated downloads.
+- Full details, test suite instructions, and manual browser walkthroughs are documented in [frontend/README.md](frontend/README.md).
+
 ### Week 3: Deterministic Validation, Duplicate Detection & Review Queue Routing
 - **Pure Deterministic Validation Engine (`app/validation.py`)**:
   - Pure function `validate_extraction(extraction, context) -> list[Issue]`, free of database and network calls for high-speed unit testing.
@@ -517,3 +527,58 @@ Search organization-wide audit trails by action, entity type, user, or date rang
 curl -X GET "http://localhost:8000/audit-log?action=edit_extraction&limit=25" \
   -H "Authorization: Bearer <ADMIN_JWT_TOKEN>"
 ```
+
+---
+
+## Pipeline Evaluation (Week 5A)
+
+DocFlow includes an automated evaluation harness in `scripts/evaluate.py` to benchmark end-to-end extraction accuracy, pipeline routing, and latency across real local models using [Ollama](https://ollama.com/) or mock providers.
+
+### 1. Running Evaluation with Local Models
+
+Ensure Ollama is running and the models you want to benchmark are pulled:
+```bash
+ollama pull llama3.2:3b
+ollama pull qwen2.5:7b
+```
+
+Run the benchmark across multiple models:
+```bash
+# In Docker or local environment:
+python scripts/evaluate.py \
+  --models "llama3.2:3b,qwen2.5:7b" \
+  --hardware "Apple M2 16GB" \
+  --repeat 3 \
+  --base-url "http://localhost:11434"
+```
+
+For mock provider testing (zero network / offline):
+```bash
+python scripts/evaluate.py \
+  --models "mock-model,mock-model-v2" \
+  --provider mock \
+  --hardware "Local Dev Machine" \
+  --repeat 2
+```
+
+### 2. Evaluated Metrics & How to Read the Results
+
+| Metric | Definition & Significance |
+| :--- | :--- |
+| **Invoice Accuracy (All Fields Correct)** | Percentage of invoices where *every single field* matches ground truth. Evaluates overall extraction fidelity. |
+| **Silent Error Rate** | **The Key Honesty Metric**: Percentage of **auto-approved** invoices that contain at least one wrong field. Lower is better (ideally 0.0%). Demonstrates whether bad extractions slip into downstream systems without human review. |
+| **Validation Catch Rate** | Percentage of flawed extractions successfully flagged by deterministic validation rules and routed to `needs_review` or `failed` rather than auto-approved. |
+| **Pipeline Routing Breakdown** | Proportion of invoices categorized as `auto_approved` vs `needs_review` vs `failed`. |
+| **Latency (Median p50 / p95)** | End-to-end processing duration per invoice in seconds. p95 reveals worst-case performance under heavy prompt generation. |
+| **Avg Tokens / Invoice** | Total prompt input + completion output tokens consumed per invoice. |
+| **Repair Retries Used** | Number of times the LLM failed initial JSON validation and required a secondary self-correction retry with feedback. |
+| **Invalid-Output Failures** | Hard failures where the model output could not be parsed into valid schema even after repair retry. |
+| **Consistency across Repeats** | Fraction of invoices whose output remained 100% identical across repeat runs (at `temperature: 0`). |
+
+### 3. Evaluation Limits & What the Numbers Do Not Prove
+
+- **Synthetic Invoices**: All sample PDFs (`samples/*.pdf`) were synthetically generated with known layouts and fonts. They do not have scan artifacts, skew, rotation, or noise.
+- **Small Sample Size**: The default benchmark dataset contains 20 invoices (10 valid, 10 bad). While sufficient for unit-level verification and regression testing, it is not a large-scale statistical benchmark.
+- **Clean Text Extraction**: Invoices are evaluated using digital text extraction (`pdfplumber`). The benchmark does not assess OCR performance on handwritten, low-DPI, or degraded physical documents.
+- **What Numbers Do NOT Prove**: High accuracy on this test set proves prompt compliance, schema discipline, and validation rule efficacy on tested templates. It **does not prove** zero hallucination or 100% reliability on wild, unstandardized commercial invoices.
+
