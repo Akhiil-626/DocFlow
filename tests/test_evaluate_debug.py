@@ -6,6 +6,7 @@ from scripts.evaluate import (
     FIELDS_TO_EVALUATE,
     format_markdown_report,
     normalize_field_for_debug,
+    print_console_summary,
     print_debug_invoice_fields,
 )
 
@@ -165,3 +166,97 @@ def test_markdown_report_never_includes_debug_values():
     assert "Number of characters of invoice text sent to model" not in report
     assert "How expected was normalized" not in report
     assert "How actual was normalized" not in report
+
+
+def test_per_invoice_table_in_console_and_markdown(capsys):
+    eval_results = [
+        {
+            "model_name": "llama3.2:3b",
+            "provider": "ollama",
+            "total_invocations": 3,
+            "invoice_accuracy_pct": 33.3,
+            "perfect_invoices": 1,
+            "critical_accuracy_pct": 66.7,
+            "perfect_critical_invoices": 2,
+            "desc_similarity_pct": 95.0,
+            "auto_approved_pct": 66.7,
+            "needs_review_pct": 33.3,
+            "failed_pct": 0.0,
+            "status_counts": {"auto_approved": 2, "needs_review": 1, "failed": 0, "uploaded": 0},
+            "latency_p50": 0.5,
+            "latency_p95": 1.2,
+            "avg_tokens": 150.0,
+            "repair_retries": 0,
+            "invalid_output_failures": 0,
+            "silent_error_rate": 50.0,
+            "silent_errors_count": 1,
+            "total_auto_approved": 2,
+            "caught_by_validation": 1,
+            "missed_by_validation": 1,
+            "total_wrong_extractions": 2,
+            "catch_rate": 50.0,
+            "consistency_pct": 100.0,
+            "consistent_invoices": 3,
+            "total_unique_invoices": 3,
+            "field_accuracies": {f: 90.0 for f in FIELDS_TO_EVALUATE},
+            "field_mistakes": {f: 0 for f in FIELDS_TO_EVALUATE},
+            "invoice_results": [
+                {
+                    "filename": "invoice_01.pdf",
+                    "model": "llama3.2:3b",
+                    "status": "auto_approved",
+                    "validation_issues": [],
+                    "wrong_fields": [],
+                    "is_correct": True,
+                },
+                {
+                    "filename": "bad_invoice_01.pdf",
+                    "model": "llama3.2:3b",
+                    "status": "needs_review",
+                    "validation_issues": ["TOTAL_MISMATCH"],
+                    "wrong_fields": ["total"],
+                    "is_correct": False,
+                },
+                {
+                    "filename": "bad_invoice_02.pdf",
+                    "model": "llama3.2:3b",
+                    "status": "auto_approved",
+                    "validation_issues": [],
+                    "wrong_fields": ["subtotal", "cgst"],
+                    "is_correct": False,
+                },
+            ],
+        }
+    ]
+
+    # 1. Test Markdown report
+    report = format_markdown_report(eval_results, "Test Hardware", 1)
+    assert "## Per-Invoice Extraction Results" in report
+    assert "| File Name | Model | Pipeline Status | Validation Issues | Wrong Fields | Flag |" in report
+    assert "invoice_01.pdf" in report
+    assert "bad_invoice_01.pdf" in report
+    assert "bad_invoice_02.pdf" in report
+    assert "TOTAL_MISMATCH" in report
+    assert "subtotal, cgst" in report
+    # Ensure silent error is flagged
+    assert "[FLAG: SILENT ERROR]" in report
+
+    # Ensure never their values:
+    for forbidden_val in ("1000.00", "1180.00", "15000.00", "12000.00"):
+        assert forbidden_val not in report
+
+    # 2. Test Console summary
+    print_console_summary(eval_results, "Test Hardware")
+    captured = capsys.readouterr().out
+    assert "PER-INVOICE RESULTS" in captured
+    assert "File Name" in captured
+    assert "Pipeline Status" in captured
+    assert "Validation Issues" in captured
+    assert "Wrong Fields" in captured
+    assert "Flag" in captured
+    assert "invoice_01.pdf" in captured
+    assert "bad_invoice_01.pdf" in captured
+    assert "bad_invoice_02.pdf" in captured
+    assert "TOTAL_MISMATCH" in captured
+    assert "subtotal, cgst" in captured
+    assert "[FLAG: SILENT ERROR]" in captured

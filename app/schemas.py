@@ -60,6 +60,58 @@ class InvoiceExtractionSchema(BaseModel):
     line_items: list[InvoiceLineItemSchema] = Field(default_factory=list, description="Extracted line items")
 
 
+# ---------------- Dedicated LLM Output Schema (Ollama) ----------------
+class LLMLineItemSchema(BaseModel):
+    description: str = Field(..., min_length=1, description="Item or service description")
+    quantity: str = Field(
+        ...,
+        description="Quantity of items. Plain digits with an optional decimal point, as strings, with NO thousands separators, currency symbols or spaces",
+    )
+    unit_price: str = Field(
+        ...,
+        description="Price per unit. Plain digits with an optional decimal point, as strings, with NO thousands separators, currency symbols or spaces",
+    )
+    amount: str = Field(
+        ...,
+        description="Total line amount. Plain digits with an optional decimal point, as strings, with NO thousands separators, currency symbols or spaces",
+    )
+
+
+class OllamaInvoiceExtractionSchema(BaseModel):
+    vendor_name: str = Field(..., min_length=1, description="Vendor or supplier business name")
+    vendor_gstin: str | None = Field(
+        ...,
+        description="the 15-character GST number if printed, otherwise null",
+    )
+    invoice_number: str = Field(..., min_length=1, description="Invoice reference number")
+    invoice_date: str = Field(..., description="Date of invoice (YYYY-MM-DD or date string as printed)")
+    currency: str = Field(default="INR", description="Currency code (default INR)")
+    subtotal: str = Field(
+        ...,
+        description="subtotal = amount before tax; money values are strings of plain digits with an optional decimal point, as strings, with NO thousands separators, currency symbols or spaces",
+    )
+    cgst: str = Field(
+        ...,
+        description="cgst = tax amounts exactly as printed; money values are strings of plain digits with an optional decimal point, with no thousands separators, currency symbols or spaces; use '0.00' only when the invoice shows zero or no such tax",
+    )
+    sgst: str = Field(
+        ...,
+        description="sgst = tax amounts exactly as printed; money values are strings of plain digits with an optional decimal point, with no thousands separators, currency symbols or spaces; use '0.00' only when the invoice shows zero or no such tax",
+    )
+    igst: str = Field(
+        ...,
+        description="igst = tax amounts exactly as printed; money values are strings of plain digits with an optional decimal point, with no thousands separators, currency symbols or spaces; use '0.00' only when the invoice shows zero or no such tax",
+    )
+    total: str = Field(
+        ...,
+        description="total = final invoice total as printed; money values are strings of plain digits with an optional decimal point, with no thousands separators, currency symbols or spaces",
+    )
+    line_items: list[LLMLineItemSchema] = Field(..., description="Extracted line items")
+
+
+LLMInvoiceExtractionSchema = OllamaInvoiceExtractionSchema
+
+
 # ---------------- Document & Extraction Response Schemas ----------------
 class LineItemResponse(BaseModel):
     model_config = ConfigDict(from_attributes=True)

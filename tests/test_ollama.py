@@ -9,7 +9,7 @@ from app.llm import (
     PermanentLLMError,
     TransientLLMError,
 )
-from app.schemas import InvoiceExtractionSchema
+from app.schemas import InvoiceExtractionSchema, OllamaInvoiceExtractionSchema
 
 SAMPLE_INVOICE_TEXT = "INVOICE #INV-999\nVendor: Acme Global Inc\nTotal: 1180.00\nSubtotal: 1000.00"
 
@@ -70,7 +70,7 @@ def test_ollama_successful_extraction():
     assert payload["stream"] is False
     assert payload["options"]["temperature"] == 0
     assert payload["options"]["num_ctx"] == 8192
-    assert payload["format"] == InvoiceExtractionSchema.model_json_schema()
+    assert payload["format"] == OllamaInvoiceExtractionSchema.model_json_schema()
 
     # Safety checks on messages
     assert len(payload["messages"]) == 2

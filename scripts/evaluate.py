@@ -38,13 +38,12 @@ from app.evaluation_metrics import (
     calculate_repeat_consistency,
     calculate_silent_error_rate,
     compare_field,
-    evaluate_invoice_extraction,
     normalize_money,
     normalize_vendor_name,
     parse_date_value,
 )
 from app.llm import LLMClient, MockLLMClient, OllamaLLMClient
-from app.models import Document, Extraction, Organization, User
+from app.models import Document, Extraction, Organization, User, ValidationIssue
 from app.security import hash_password
 from app.storage import LocalStorage
 from app.worker.tasks import extract_text_from_pdf, process_document
@@ -61,6 +60,17 @@ FIELDS_TO_EVALUATE = [
     "invoice_number",
     "invoice_date",
     "currency",
+    "subtotal",
+    "cgst",
+    "sgst",
+    "igst",
+    "total",
+    "line_items",
+]
+
+CRITICAL_FIELDS = [
+    "invoice_number",
+    "invoice_date",
     "subtotal",
     "cgst",
     "sgst",
@@ -100,6 +110,78 @@ def create_client(provider: str, model_name: str, base_url: str | None, timeout:
     if provider_clean == "mock":
         return MockLLMClient(model_name=model_name)
     raise ValueError(f"Unsupported evaluation provider: {provider}")
+
+
+def compare_line_items_numeric(extracted_items: Any, ground_truth_items: Any) -> bool:
+    """Compare line items purely on quantity, unit_price, and amount (ignoring description)."""
+    gt_items = ground_truth_items if isinstance(ground_truth_items, list) else []
+    ex_items = extracted_items if isinstance(extracted_items, list) else []
+    if len(gt_items) != len(ex_items):
+        return False
+    for gt_i, ex_i in zip(gt_items, ex_items):
+        if not isinstance(gt_i, dict) or not isinstance(ex_i, dict):
+            return False
+        qty_match = normalize_money(ex_i.get("quantity")) == normalize_money(gt_i.get("quantity"))
+        price_match = normalize_money(ex_i.get("unit_price")) == normalize_money(gt_i.get("unit_price"))
+        amt_match = normalize_money(ex_i.get("amount")) == normalize_money(gt_i.get("amount"))
+        if not (qty_match and price_match and amt_match):
+            return False
+    return True
+
+
+def calculate_line_item_description_similarity(extracted_items: Any, ground_truth_items: Any) -> float:
+    """Calculate looser description similarity ratio across line items (0.0 to 100.0%)."""
+    import difflib
+
+    gt_list = ground_truth_items if isinstance(ground_truth_items, list) else []
+    ex_list = extracted_items if isinstance(extracted_items, list) else []
+    if not gt_list and not ex_list:
+        return 100.0
+    if not gt_list or not ex_list:
+        return 0.0
+
+    total_pairs = max(len(gt_list), len(ex_list))
+    total_sim = 0.0
+
+    for gt_i, ex_i in zip(gt_list, ex_list):
+        if isinstance(gt_i, dict) and isinstance(ex_i, dict):
+            d1 = str(gt_i.get("description") or "").strip().lower()
+            d2 = str(ex_i.get("description") or "").strip().lower()
+            sim = difflib.SequenceMatcher(None, d1, d2).ratio()
+            total_sim += sim
+
+    return round((total_sim / total_pairs) * 100.0, 1)
+
+
+def compare_field_for_evaluation(field_name: str, extracted_val: Any, ground_truth_val: Any) -> bool:
+    """Compare field for evaluation. For line_items, compare quantity, unit_price and amount."""
+    if field_name == "line_items":
+        return compare_line_items_numeric(extracted_val, ground_truth_val)
+    return compare_field(field_name, extracted_val, ground_truth_val)
+
+
+def evaluate_invoice_for_eval(
+    extracted_data: dict[str, Any],
+    ground_truth: dict[str, Any],
+    fields_to_check: list[str] | None = None,
+) -> tuple[bool, dict[str, bool], list[str]]:
+    """Evaluate extracted invoice against ground truth using evaluation comparison rules."""
+    if fields_to_check is None:
+        fields_to_check = FIELDS_TO_EVALUATE
+
+    field_matches: dict[str, bool] = {}
+    mismatched_fields: list[str] = []
+
+    for field in fields_to_check:
+        ex_val = extracted_data.get(field)
+        gt_val = ground_truth.get(field)
+        matched = compare_field_for_evaluation(field, ex_val, gt_val)
+        field_matches[field] = matched
+        if not matched:
+            mismatched_fields.append(field)
+
+    is_all_correct = len(mismatched_fields) == 0
+    return is_all_correct, field_matches, mismatched_fields
 
 
 def normalize_field_for_debug(field_name: str, val: Any) -> tuple[Any, str]:
@@ -162,7 +244,7 @@ def print_debug_invoice_fields(
         norm_gt, rule_gt = normalize_field_for_debug(field, gt_val)
         norm_ex, rule_ex = normalize_field_for_debug(field, ex_val)
 
-        is_match = compare_field(field, ex_val, gt_val)
+        is_match = compare_field_for_evaluation(field, ex_val, gt_val)
         match_str = "MATCH" if is_match else "MISMATCH"
 
         print(f"Field: {field}")
@@ -220,6 +302,8 @@ def evaluate_single_model(
     invalid_output_failures = 0
     status_counts = {"auto_approved": 0, "needs_review": 0, "failed": 0, "uploaded": 0}
     perfect_invoice_count = 0
+    perfect_critical_invoice_count = 0
+    desc_similarities: list[float] = []
     total_eval_invocations = 0
     debug_printed_count = 0
 
@@ -280,14 +364,28 @@ def evaluate_single_model(
 
                 extraction = db.query(Extraction).filter(Extraction.document_id == doc_id).first()
 
+                db_issues = (
+                    db.query(ValidationIssue.code)
+                    .filter(ValidationIssue.document_id == doc_id)
+                    .all()
+                )
+                issue_codes = [r[0] for r in db_issues]
+
+                inv_display_name = pdf_name if repeat == 1 else f"{pdf_name} (run {run_idx})"
+
                 if doc.status == "failed" or not extraction:
                     invalid_output_failures += 1
                     latencies_sec.append(wall_latency_sec)
+                    desc_similarities.append(0.0)
                     all_run_results.append({
-                        "filename": pdf_name,
+                        "filename": inv_display_name,
+                        "model": model_name,
                         "status": doc.status,
                         "is_correct": False,
                         "latency_sec": wall_latency_sec,
+                        "validation_issues": issue_codes,
+                        "wrong_fields": list(FIELDS_TO_EVALUATE),
+                        "mismatches": list(FIELDS_TO_EVALUATE),
                     })
                     invoice_repeat_runs[pdf_name].append({})
                     if should_debug:
@@ -319,12 +417,23 @@ def evaluate_single_model(
                     repair_retries_total += 1
 
                 # Evaluate field extraction accuracy against ground truth
-                is_all_correct, field_matches, mismatches = evaluate_invoice_extraction(
+                is_all_correct, field_matches, mismatches = evaluate_invoice_for_eval(
                     extracted_data, ground_truth, FIELDS_TO_EVALUATE
                 )
 
                 if is_all_correct:
                     perfect_invoice_count += 1
+
+                # Critical fields check
+                is_critical_correct = all(field_matches.get(f, False) for f in CRITICAL_FIELDS)
+                if is_critical_correct:
+                    perfect_critical_invoice_count += 1
+
+                # Line item description similarity (looser metric)
+                sim = calculate_line_item_description_similarity(
+                    extracted_data.get("line_items"), ground_truth.get("line_items")
+                )
+                desc_similarities.append(sim)
 
                 for field in FIELDS_TO_EVALUATE:
                     field_total_evals[field] += 1
@@ -334,10 +443,13 @@ def evaluate_single_model(
                         field_mistake_counts[field] += 1
 
                 all_run_results.append({
-                    "filename": pdf_name,
+                    "filename": inv_display_name,
+                    "model": model_name,
                     "status": doc.status,
                     "is_correct": is_all_correct,
                     "latency_sec": latency_s,
+                    "validation_issues": issue_codes,
+                    "wrong_fields": list(mismatches),
                     "mismatches": mismatches,
                 })
 
@@ -379,6 +491,18 @@ def evaluate_single_model(
         else 0.0
     )
 
+    critical_accuracy_pct = (
+        (perfect_critical_invoice_count / total_eval_invocations * 100.0)
+        if total_eval_invocations > 0
+        else 0.0
+    )
+
+    avg_desc_sim = (
+        round(sum(desc_similarities) / len(desc_similarities), 1)
+        if desc_similarities
+        else 100.0
+    )
+
     auto_app_pct = (
         (status_counts["auto_approved"] / total_eval_invocations * 100.0)
         if total_eval_invocations > 0
@@ -413,6 +537,9 @@ def evaluate_single_model(
         "total_invocations": total_eval_invocations,
         "invoice_accuracy_pct": round(invoice_accuracy_pct, 1),
         "perfect_invoices": perfect_invoice_count,
+        "critical_accuracy_pct": round(critical_accuracy_pct, 1),
+        "perfect_critical_invoices": perfect_critical_invoice_count,
+        "desc_similarity_pct": avg_desc_sim,
         "auto_approved_pct": round(auto_app_pct, 1),
         "needs_review_pct": round(needs_rev_pct, 1),
         "failed_pct": round(failed_pct, 1),
@@ -434,6 +561,7 @@ def evaluate_single_model(
         "total_unique_invoices": consistency_metrics["total_invoices"],
         "field_accuracies": field_accuracy_pct,
         "field_mistakes": field_mistake_counts,
+        "invoice_results": all_run_results,
     }
 
 
@@ -461,6 +589,8 @@ def format_markdown_report(
         "| Metric | " + " | ".join(f"**{r['model_name']} ({r.get('provider', '').upper()})**" for r in eval_results) + " |",
         "| :--- | " + " | ".join(":---:" for _ in eval_results) + " |",
         "| **Invoice Accuracy (All Fields Correct)** | " + " | ".join(f"{r['invoice_accuracy_pct']}% ({r['perfect_invoices']}/{r['total_invocations']})" for r in eval_results) + " |",
+        "| **Critical-Fields Accuracy** | " + " | ".join(f"{r.get('critical_accuracy_pct', r.get('invoice_accuracy_pct', 0.0))}% ({r.get('perfect_critical_invoices', r.get('perfect_invoices', 0))}/{r.get('total_invocations', 0)})" for r in eval_results) + " |",
+        "| **Line Item Description Similarity** | " + " | ".join(f"{r.get('desc_similarity_pct', 0.0)}%" for r in eval_results) + " |",
         "| **Silent Error Rate (Wrong in Auto-Approved)** | " + " | ".join(f"**{r['silent_error_rate']}%** ({r['silent_errors_count']}/{r['total_auto_approved']})" for r in eval_results) + " |",
         "| **Validation Catch Rate (Caught / Total Wrong)** | " + " | ".join(f"{r['catch_rate']}% ({r['caught_by_validation']}/{r['total_wrong_extractions']})" for r in eval_results) + " |",
         "| **Pipeline Routing (Auto / Review / Fail)** | " + " | ".join(f"{r['auto_approved_pct']}% / {r['needs_review_pct']}% / {r['failed_pct']}%" for r in eval_results) + " |",
@@ -505,6 +635,34 @@ def format_markdown_report(
             lines.append("- No field extraction errors recorded across tested sample invoices.")
         lines.append("")
 
+    has_any_invoice_results = any(
+        (r.get("invoice_results") or r.get("all_run_results")) for r in eval_results
+    )
+    if has_any_invoice_results:
+        lines.extend([
+            "---",
+            "",
+            "## Per-Invoice Extraction Results",
+            "",
+            "| File Name | Model | Pipeline Status | Validation Issues | Wrong Fields | Flag |",
+            "| :--- | :--- | :--- | :--- | :--- | :--- |",
+        ])
+        for r in eval_results:
+            m_name = r.get("model_name", "unknown")
+            inv_results = r.get("invoice_results") or r.get("all_run_results") or []
+            for inv in inv_results:
+                fname = inv.get("filename", "")
+                m_val = inv.get("model") or m_name
+                status = inv.get("status", "")
+                issues = inv.get("validation_issues", [])
+                issues_str = ", ".join(str(x) for x in issues) if issues else "None"
+                wrong_fields = inv.get("wrong_fields", inv.get("mismatches", []))
+                wrong_str = ", ".join(str(x) for x in wrong_fields) if wrong_fields else "None"
+                is_silent = (status == "auto_approved" and wrong_str != "None")
+                flag_str = "[FLAG: SILENT ERROR]" if is_silent else "-"
+                lines.append(f"| {fname} | {m_val} | {status} | {issues_str} | {wrong_str} | {flag_str} |")
+        lines.append("")
+
     return "\n".join(lines)
 
 
@@ -523,6 +681,8 @@ def print_console_summary(eval_results: list[dict[str, Any]], hardware_note: str
 
     rows = [
         ("Invoice Accuracy (All Fields Correct)", [f"{r['invoice_accuracy_pct']}%" for r in eval_results]),
+        ("Critical-Fields Accuracy", [f"{r.get('critical_accuracy_pct', r.get('invoice_accuracy_pct', 0.0))}% ({r.get('perfect_critical_invoices', r.get('perfect_invoices', 0))}/{r.get('total_invocations', 0)})" for r in eval_results]),
+        ("Line Item Description Similarity", [f"{r.get('desc_similarity_pct', 0.0)}%" for r in eval_results]),
         ("Silent Error Rate (Wrong in Auto-Approved)", [f"{r['silent_error_rate']}%" for r in eval_results]),
         ("Validation Catch Rate (Caught / Wrong)", [f"{r['catch_rate']}%" for r in eval_results]),
         ("Auto-Approved %", [f"{r['auto_approved_pct']}%" for r in eval_results]),
@@ -541,6 +701,17 @@ def print_console_summary(eval_results: list[dict[str, Any]], hardware_note: str
         print(line)
 
     print("-" * 90)
+    print(f"{'PER-FIELD EXTRACTION ACCURACY':^90}")
+    print("-" * 90)
+    field_header = f"{'Field':<42} | " + " | ".join(f"{f'{r['model_name']} ({r.get('provider', '').upper()})'[:20]:<20}" for r in eval_results)
+    print(field_header)
+    print("-" * 90)
+    for field in FIELDS_TO_EVALUATE:
+        f_vals = [f"{r['field_accuracies'].get(field, 0.0)}%" for r in eval_results]
+        line = f"{field:<42} | " + " | ".join(f"{v:<20}" for v in f_vals)
+        print(line)
+
+    print("-" * 90)
     print("Most Common Mistakes:")
     for r in eval_results:
         sorted_mistakes = sorted(
@@ -551,6 +722,65 @@ def print_console_summary(eval_results: list[dict[str, Any]], hardware_note: str
         ][:4]
         mistakes_str = ", ".join(mistakes_summary) or "None (100% field accuracy)"
         print(f"  - {r['model_name']}: {mistakes_str}")
+
+    all_invoice_rows: list[dict[str, Any]] = []
+    for r in eval_results:
+        m_name = r.get("model_name", "unknown")
+        inv_results = r.get("invoice_results") or r.get("all_run_results") or []
+        for inv in inv_results:
+            fname = str(inv.get("filename", ""))
+            m_val = str(inv.get("model") or m_name)
+            status = str(inv.get("status", ""))
+            issues = inv.get("validation_issues", [])
+            issues_str = ", ".join(str(x) for x in issues) if issues else "None"
+            wrong_fields = inv.get("wrong_fields", inv.get("mismatches", []))
+            wrong_str = ", ".join(str(x) for x in wrong_fields) if wrong_fields else "None"
+            is_silent = (status == "auto_approved" and wrong_str != "None")
+            flag_str = "[FLAG: SILENT ERROR]" if is_silent else "-"
+            all_invoice_rows.append({
+                "filename": fname,
+                "model": m_val,
+                "status": status,
+                "issues": issues_str,
+                "wrong_fields": wrong_str,
+                "flag": flag_str,
+            })
+
+    if all_invoice_rows:
+        col_file = max(len("File Name"), max(len(row["filename"]) for row in all_invoice_rows))
+        col_model = max(len("Model"), max(len(row["model"]) for row in all_invoice_rows))
+        col_status = max(len("Pipeline Status"), max(len(row["status"]) for row in all_invoice_rows))
+        col_issues = max(len("Validation Issues"), max(len(row["issues"]) for row in all_invoice_rows))
+        col_wrong = max(len("Wrong Fields"), max(len(row["wrong_fields"]) for row in all_invoice_rows))
+        col_flag = max(len("Flag"), max(len(row["flag"]) for row in all_invoice_rows))
+
+        table_width = col_file + col_model + col_status + col_issues + col_wrong + col_flag + 15
+        table_width = max(table_width, 90)
+
+        print("-" * table_width)
+        print(f"{'PER-INVOICE RESULTS':^{table_width}}")
+        print("-" * table_width)
+        header = (
+            f"{'File Name':<{col_file}} | "
+            f"{'Model':<{col_model}} | "
+            f"{'Pipeline Status':<{col_status}} | "
+            f"{'Validation Issues':<{col_issues}} | "
+            f"{'Wrong Fields':<{col_wrong}} | "
+            f"{'Flag':<{col_flag}}"
+        )
+        print(header)
+        print("-" * table_width)
+        for row in all_invoice_rows:
+            line = (
+                f"{row['filename']:<{col_file}} | "
+                f"{row['model']:<{col_model}} | "
+                f"{row['status']:<{col_status}} | "
+                f"{row['issues']:<{col_issues}} | "
+                f"{row['wrong_fields']:<{col_wrong}} | "
+                f"{row['flag']:<{col_flag}}"
+            )
+            print(line)
+
     print("=" * 90 + "\n")
 
 
@@ -655,7 +885,7 @@ def main():
             debug_invoices=debug_n if idx == 1 else 0,
         )
         results_all_models.append(res)
-        print(f"    Done: Invoice Accuracy: {res['invoice_accuracy_pct']}% | Silent Error Rate: {res['silent_error_rate']}% | Median Latency: {res['latency_p50']}s")
+        print(f"    Done: Invoice Accuracy: {res['invoice_accuracy_pct']}% | Critical-Fields: {res['critical_accuracy_pct']}% | Desc Similarity: {res['desc_similarity_pct']}% | Silent Error Rate: {res['silent_error_rate']}% | Median Latency: {res['latency_p50']}s")
 
     # Console output
     print_console_summary(results_all_models, args.hardware)
