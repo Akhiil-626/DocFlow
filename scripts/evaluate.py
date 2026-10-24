@@ -37,13 +37,17 @@ from app.evaluation_metrics import (
     calculate_percentiles,
     calculate_repeat_consistency,
     calculate_silent_error_rate,
+    compare_field,
     evaluate_invoice_extraction,
+    normalize_money,
+    normalize_vendor_name,
+    parse_date_value,
 )
 from app.llm import LLMClient, MockLLMClient, OllamaLLMClient
 from app.models import Document, Extraction, Organization, User
 from app.security import hash_password
 from app.storage import LocalStorage
-from app.worker.tasks import process_document
+from app.worker.tasks import extract_text_from_pdf, process_document
 
 logging.basicConfig(level=logging.WARNING)
 logger = logging.getLogger("evaluate")
@@ -98,6 +102,79 @@ def create_client(provider: str, model_name: str, base_url: str | None, timeout:
     raise ValueError(f"Unsupported evaluation provider: {provider}")
 
 
+def normalize_field_for_debug(field_name: str, val: Any) -> tuple[Any, str]:
+    """Return normalized value and a description of how it was normalized for comparison."""
+    if field_name == "vendor_name":
+        return normalize_vendor_name(val), "trimmed and lowercase"
+
+    if field_name == "invoice_date":
+        d = parse_date_value(val)
+        if d is not None:
+            return d, "parsed as date (ISO / YYYY-MM-DD / DD-MM-YYYY)"
+        return str(val or "").strip(), "unparseable/missing date, trimmed string fallback"
+
+    if field_name in ("subtotal", "cgst", "sgst", "igst", "total", "unit_price", "amount", "quantity"):
+        return normalize_money(val), "converted to Decimal"
+
+    if field_name in ("vendor_gstin", "invoice_number", "currency"):
+        return str(val or "").strip().upper(), "trimmed and uppercase"
+
+    if field_name == "line_items":
+        items = val if isinstance(val, list) else []
+        norm_items = []
+        for item in items:
+            if isinstance(item, dict):
+                norm_items.append({
+                    "description": str(item.get("description") or "").strip().lower(),
+                    "quantity": normalize_money(item.get("quantity")),
+                    "unit_price": normalize_money(item.get("unit_price")),
+                    "amount": normalize_money(item.get("amount")),
+                })
+            else:
+                norm_items.append(item)
+        return norm_items, "items normalized (description trimmed & lowercased, quantity/unit_price/amount to Decimal)"
+
+    return str(val or "").strip(), "trimmed string"
+
+
+def print_debug_invoice_fields(
+    invoice_name: str,
+    invoice_index: int,
+    total_debug_invoices: int,
+    char_count: int,
+    expected_data: dict[str, Any],
+    actual_data: dict[str, Any],
+    fields: list[str] | None = None,
+) -> None:
+    """Print debug comparison for an invoice showing expected, actual, normalization, and match status."""
+    if fields is None:
+        fields = FIELDS_TO_EVALUATE
+
+    print("\n" + "=" * 70)
+    print(f"[DEBUG] Invoice {invoice_index}/{total_debug_invoices}: {invoice_name}")
+    print(f"Number of characters of invoice text sent to model: {char_count}")
+    print("-" * 70)
+
+    for field in fields:
+        gt_val = expected_data.get(field)
+        ex_val = actual_data.get(field)
+
+        norm_gt, rule_gt = normalize_field_for_debug(field, gt_val)
+        norm_ex, rule_ex = normalize_field_for_debug(field, ex_val)
+
+        is_match = compare_field(field, ex_val, gt_val)
+        match_str = "MATCH" if is_match else "MISMATCH"
+
+        print(f"Field: {field}")
+        print(f"  Expected value: {gt_val!r}")
+        print(f"  Actual value:   {ex_val!r}")
+        print(f"  How expected was normalized: {norm_gt!r} ({rule_gt})")
+        print(f"  How actual was normalized:   {norm_ex!r} ({rule_ex})")
+        print(f"  Match or mismatch: {match_str}")
+
+    print("=" * 70 + "\n")
+
+
 def evaluate_single_model(
     model_name: str,
     provider: str,
@@ -106,6 +183,7 @@ def evaluate_single_model(
     base_url: str | None,
     timeout: float | None,
     num_ctx: int | None,
+    debug_invoices: int = 0,
 ) -> dict[str, Any]:
     """Run evaluation for a single model across repeat runs inside an isolated organization."""
     db: Session = SessionLocal()
@@ -143,6 +221,7 @@ def evaluate_single_model(
     status_counts = {"auto_approved": 0, "needs_review": 0, "failed": 0, "uploaded": 0}
     perfect_invoice_count = 0
     total_eval_invocations = 0
+    debug_printed_count = 0
 
     try:
         for run_idx in range(1, repeat + 1):
@@ -158,6 +237,9 @@ def evaluate_single_model(
                 # Read and save PDF in isolated org storage
                 with open(pdf_path, "rb") as f:
                     pdf_bytes = f.read()
+
+                should_debug = (debug_invoices > 0 and debug_printed_count < debug_invoices)
+                invoice_text_len = len(extract_text_from_pdf(pdf_bytes)) if should_debug else 0
 
                 doc_id = uuid.uuid4()
                 storage_key = f"{eval_org_id}/{doc_id}.pdf"
@@ -208,6 +290,17 @@ def evaluate_single_model(
                         "latency_sec": wall_latency_sec,
                     })
                     invoice_repeat_runs[pdf_name].append({})
+                    if should_debug:
+                        debug_printed_count += 1
+                        print_debug_invoice_fields(
+                            invoice_name=pdf_name,
+                            invoice_index=debug_printed_count,
+                            total_debug_invoices=debug_invoices,
+                            char_count=invoice_text_len,
+                            expected_data=ground_truth,
+                            actual_data={},
+                            fields=FIELDS_TO_EVALUATE,
+                        )
                     continue
 
                 extracted_data = extraction.data or {}
@@ -220,7 +313,7 @@ def evaluate_single_model(
                 token_counts.append(total_tokens)
 
                 # Check if repair retry was used
-                orig_data = extraction.original_data or {}
+                _orig_data = extraction.original_data or {}
                 # If extraction recorded repair_retries or model output invalid initially
                 if extraction.version > 1 or getattr(extraction, "attempts", 1) > 1:
                     repair_retries_total += 1
@@ -247,6 +340,18 @@ def evaluate_single_model(
                     "latency_sec": latency_s,
                     "mismatches": mismatches,
                 })
+
+                if should_debug:
+                    debug_printed_count += 1
+                    print_debug_invoice_fields(
+                        invoice_name=pdf_name,
+                        invoice_index=debug_printed_count,
+                        total_debug_invoices=debug_invoices,
+                        char_count=invoice_text_len,
+                        expected_data=ground_truth,
+                        actual_data=extracted_data,
+                        fields=FIELDS_TO_EVALUATE,
+                    )
 
     finally:
         # Guaranteed cleanup of isolated test data
@@ -340,18 +445,20 @@ def format_markdown_report(
     """Format full evaluation markdown report without containing any invoice text."""
     date_str = datetime.now(UTC).strftime("%Y-%m-%d %H:%M:%S UTC")
     model_names_str = ", ".join(f"`{r['model_name']}`" for r in eval_results)
+    provider_str = ", ".join(sorted(set(r.get("provider", "unknown").upper() for r in eval_results)))
 
     lines = [
-        "# DocFlow Local Model Pipeline Evaluation (Week 5A)",
+        "# DocFlow Local Model Pipeline Evaluation Report",
         "",
         f"- **Date**: {date_str}",
+        f"- **Provider**: `{provider_str}`",
         f"- **Models Evaluated**: {model_names_str}",
         f"- **Hardware Specification**: {hardware_note}",
         f"- **Repetitions per Invoice**: {repeat}",
         "",
         "## Model Comparison Matrix",
         "",
-        "| Metric | " + " | ".join(f"**{r['model_name']}**" for r in eval_results) + " |",
+        "| Metric | " + " | ".join(f"**{r['model_name']} ({r.get('provider', '').upper()})**" for r in eval_results) + " |",
         "| :--- | " + " | ".join(":---:" for _ in eval_results) + " |",
         "| **Invoice Accuracy (All Fields Correct)** | " + " | ".join(f"{r['invoice_accuracy_pct']}% ({r['perfect_invoices']}/{r['total_invocations']})" for r in eval_results) + " |",
         "| **Silent Error Rate (Wrong in Auto-Approved)** | " + " | ".join(f"**{r['silent_error_rate']}%** ({r['silent_errors_count']}/{r['total_auto_approved']})" for r in eval_results) + " |",
@@ -367,7 +474,7 @@ def format_markdown_report(
         "",
         "## Field-by-Field Extraction Accuracy",
         "",
-        "| Field | " + " | ".join(f"**{r['model_name']}**" for r in eval_results) + " |",
+        "| Field | " + " | ".join(f"**{r['model_name']} ({r.get('provider', '').upper()})**" for r in eval_results) + " |",
         "| :--- | " + " | ".join(":---:" for _ in eval_results) + " |",
     ]
 
@@ -384,7 +491,7 @@ def format_markdown_report(
     ])
 
     for r in eval_results:
-        lines.append(f"### Model: `{r['model_name']}`")
+        lines.append(f"### Model: `{r['model_name']}` ({r.get('provider', '').upper()})")
         sorted_mistakes = sorted(
             r["field_mistakes"].items(), key=lambda item: item[1], reverse=True
         )
@@ -403,12 +510,14 @@ def format_markdown_report(
 
 def print_console_summary(eval_results: list[dict[str, Any]], hardware_note: str):
     """Print clean terminal comparison table."""
+    provider_str = ", ".join(sorted(set(r.get("provider", "unknown").upper() for r in eval_results)))
     print("\n" + "=" * 90)
-    print(f"{'DOCFLOW PIPELINE EVALUATION SUMMARY (WEEK 5A)':^90}")
+    print(f"{'DOCFLOW PIPELINE EVALUATION SUMMARY':^90}")
+    print(f"{'Provider: ' + provider_str:^90}")
     print(f"{'Hardware: ' + hardware_note:^90}")
     print("=" * 90)
 
-    header = f"{'Metric':<42} | " + " | ".join(f"{r['model_name'][:20]:<20}" for r in eval_results)
+    header = f"{'Metric':<42} | " + " | ".join(f"{f'{r['model_name']} ({r.get('provider', '').upper()})'[:20]:<20}" for r in eval_results)
     print(header)
     print("-" * 90)
 
@@ -495,6 +604,15 @@ def main():
         default=str(DEFAULT_RESULTS_FILE),
         help="Path to write evaluation markdown report",
     )
+    parser.add_argument(
+        "--debug",
+        type=int,
+        nargs="?",
+        const=1,
+        default=0,
+        metavar="N",
+        help="Print detailed field comparison for the first N invoices of the first model only",
+    )
 
     args = parser.parse_args()
 
@@ -515,12 +633,15 @@ def main():
         print(f"Error: No sample files found in {SAMPLES_DIR}")
         sys.exit(1)
 
-    print(f"\nLoaded {len(dataset)} invoice samples ({len([p for p, _ in dataset if 'bad' in p.name])} bad, {len([p for p, _ in dataset if 'bad' not in p.name])} valid)")
-    print(f"Evaluating {len(models_list)} model(s) via provider '{provider}': {', '.join(models_list)}")
+    print("\n" + "=" * 90)
+    print(f"DOCFLOW EVALUATION RUN: PROVIDER = {provider.upper()} | MODELS = {', '.join(models_list)}")
+    print("=" * 90)
+    print(f"Loaded {len(dataset)} invoice samples ({len([p for p, _ in dataset if 'bad' in p.name])} bad, {len([p for p, _ in dataset if 'bad' not in p.name])} valid)")
     print(f"Repeat per invoice: {args.repeat} | Hardware: {args.hardware}\n")
 
     results_all_models: list[dict[str, Any]] = []
 
+    debug_n = max(args.debug, 0)
     for idx, model_name in enumerate(models_list, 1):
         print(f"[{idx}/{len(models_list)}] Evaluating model: {model_name}...")
         res = evaluate_single_model(
@@ -531,6 +652,7 @@ def main():
             base_url=args.base_url,
             timeout=args.timeout,
             num_ctx=args.num_ctx,
+            debug_invoices=debug_n if idx == 1 else 0,
         )
         results_all_models.append(res)
         print(f"    Done: Invoice Accuracy: {res['invoice_accuracy_pct']}% | Silent Error Rate: {res['silent_error_rate']}% | Median Latency: {res['latency_p50']}s")
