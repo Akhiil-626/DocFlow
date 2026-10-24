@@ -21,3 +21,6 @@ data/
 *.jpg
 *.jpeg
 cookies*.txt
+
+eval_run.log
+debug_run.log

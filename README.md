@@ -104,9 +104,12 @@ Copy `.env.example` to `.env`:
 cp .env.example .env
 ```
 Key settings:
-- `LLM_PROVIDER`: `mock` (default for local development and offline testing) or `gemini`.
+- `LLM_PROVIDER`: `mock` (default for local development and offline testing), `ollama` (for local models), or `gemini`.
+- `OLLAMA_BASE_URL`: Base URL for Ollama service (default `http://host.docker.internal:11434` in Docker, `http://localhost:11434` on host).
+- `LLM_MODEL`: Model tag to invoke (e.g. `llama3.2:3b`, `qwen2.5:7b`, or `gemini-2.5-flash`).
+- `OLLAMA_TIMEOUT_SECONDS`: Request timeout in seconds for Ollama API calls (default `180`).
+- `OLLAMA_NUM_CTX`: Context window size in tokens for Ollama (default `8192`).
 - `LLM_API_KEY`: Required only when `LLM_PROVIDER=gemini`.
-- `LLM_MODEL`: e.g. `gemini-2.5-flash`.
 - `CELERY_BROKER_URL`: `redis://localhost:6379/0` (host) or `redis://redis:6379/0` (Docker).
 
 ### 2. Start Services with Docker Compose

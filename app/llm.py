@@ -272,7 +272,7 @@ class GeminiLLMClient(LLMClient):
 
 
 class OllamaLLMClient(LLMClient):
-    """Ollama local LLM client."""
+    """Ollama local LLM client using /api/chat with structured output format."""
 
     def __init__(
         self,
@@ -289,13 +289,15 @@ class OllamaLLMClient(LLMClient):
     def _call_api(self, prompt: str) -> tuple[str, int | None, int | None]:
         import httpx
 
-        url = f"{self.base_url}/api/generate"
+        url = f"{self.base_url}/api/chat"
         payload = {
             "model": self.model_name,
-            "prompt": prompt,
+            "messages": [
+                {"role": "system", "content": SYSTEM_INSTRUCTION},
+                {"role": "user", "content": prompt},
+            ],
             "stream": False,
-            "format": "json",
-            "system": SYSTEM_INSTRUCTION,
+            "format": InvoiceExtractionSchema.model_json_schema(),
             "options": {
                 "temperature": 0,
                 "num_ctx": self.num_ctx,
@@ -303,16 +305,37 @@ class OllamaLLMClient(LLMClient):
         }
         try:
             resp = httpx.post(url, json=payload, timeout=self.timeout_seconds)
-            if resp.status_code != 200:
-                raise TransientLLMError(f"Ollama returned HTTP status {resp.status_code}")
-            data = resp.json()
-            return (
-                data.get("response", ""),
-                data.get("prompt_eval_count"),
-                data.get("eval_count"),
-            )
-        except Exception as err:
+        except httpx.TimeoutException as err:
+            raise TransientLLMError(f"Ollama request timed out after {self.timeout_seconds}s: {err}") from err
+        except (httpx.ConnectError, httpx.NetworkError) as err:
             raise TransientLLMError(f"Ollama connection error: {err}") from err
+        except httpx.RequestError as err:
+            raise TransientLLMError(f"Ollama request error: {err}") from err
+
+        if resp.status_code == 404:
+            raise PermanentLLMError(f"Model not found: run ollama pull {self.model_name}")
+        if resp.status_code >= 500:
+            raise TransientLLMError(f"Ollama server error (HTTP {resp.status_code}): {resp.text}")
+        if resp.status_code != 200:
+            err_text = resp.text
+            if "not found" in err_text.lower():
+                raise PermanentLLMError(f"Model not found: run ollama pull {self.model_name}")
+            raise PermanentLLMError(f"Ollama error (HTTP {resp.status_code}): {err_text}")
+
+        try:
+            data = resp.json()
+        except Exception as err:
+            raise PermanentLLMError(f"Ollama returned invalid JSON envelope: {err}") from err
+
+        content = data.get("message", {}).get("content", "")
+        if not content and "response" in data:
+            content = data["response"]
+
+        return (
+            content,
+            data.get("prompt_eval_count"),
+            data.get("eval_count"),
+        )
 
     def extract_invoice(self, text: str) -> tuple[dict[str, Any], dict[str, Any]]:
         initial_prompt = build_prompt(text)
@@ -331,7 +354,12 @@ class OllamaLLMClient(LLMClient):
                 "latency_ms": latency_ms,
                 "repair_retries": 0,
             }
-            logger.info("Ollama extraction succeeded in %d ms", latency_ms)
+            logger.info(
+                "Ollama extraction succeeded in %d ms (tokens: in=%s, out=%s)",
+                latency_ms,
+                in_tok,
+                out_tok,
+            )
             return validated, usage
         except (ValueError, ValidationError) as first_err:
             first_error_msg = str(first_err)
@@ -353,7 +381,12 @@ class OllamaLLMClient(LLMClient):
                 "latency_ms": latency_ms,
                 "repair_retries": 1,
             }
-            logger.info("Ollama extraction succeeded on repair attempt in %d ms", latency_ms)
+            logger.info(
+                "Ollama extraction succeeded on repair attempt in %d ms (tokens: in=%s, out=%s)",
+                latency_ms,
+                total_in_tok,
+                total_out_tok,
+            )
             return validated, usage
         except (ValueError, ValidationError) as repair_err:
             raise PermanentLLMError(

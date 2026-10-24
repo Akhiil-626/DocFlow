@@ -51,8 +51,8 @@ def extract_text_from_pdf(file_bytes: bytes) -> str:
     bind=True,
     max_retries=3,
     acks_late=True,
-    time_limit=120,
-    soft_time_limit=90,
+    time_limit=420,
+    soft_time_limit=390,
 )
 def process_document(
     self,

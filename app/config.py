@@ -42,9 +42,9 @@ class Settings(BaseSettings):
     LLM_PROVIDER: str = "mock"  # "mock" or "gemini" or "ollama"
     LLM_API_KEY: str | None = None
     LLM_MODEL: str = "gemini-2.5-flash"
-    OLLAMA_BASE_URL: str = "http://localhost:11434"
-    OLLAMA_TIMEOUT_SECONDS: float = 60.0
-    OLLAMA_NUM_CTX: int = 4096
+    OLLAMA_BASE_URL: str = "http://host.docker.internal:11434"
+    OLLAMA_TIMEOUT_SECONDS: float = 180.0
+    OLLAMA_NUM_CTX: int = 8192
 
     # CORS Settings (explicit list, never wildcard with credentials)
     CORS_ORIGINS: str = "http://localhost:5173"
