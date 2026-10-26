@@ -293,6 +293,7 @@ def evaluate_single_model(
     # Tracking containers
     invoice_repeat_runs: dict[str, list[dict[str, Any]]] = {}
     all_run_results: list[dict[str, Any]] = []
+    raw_records: list[dict[str, Any]] = []
     field_match_counts: dict[str, int] = {f: 0 for f in FIELDS_TO_EVALUATE}
     field_total_evals: dict[str, int] = {f: 0 for f in FIELDS_TO_EVALUATE}
     field_mistake_counts: dict[str, int] = {f: 0 for f in FIELDS_TO_EVALUATE}
@@ -365,11 +366,15 @@ def evaluate_single_model(
                 extraction = db.query(Extraction).filter(Extraction.document_id == doc_id).first()
 
                 db_issues = (
-                    db.query(ValidationIssue.code)
+                    db.query(ValidationIssue.code, ValidationIssue.severity, ValidationIssue.field)
                     .filter(ValidationIssue.document_id == doc_id)
                     .all()
                 )
                 issue_codes = [r[0] for r in db_issues]
+                raw_issues = [
+                    {"code": r[0], "severity": r[1], "field": r[2]}
+                    for r in db_issues
+                ]
 
                 inv_display_name = pdf_name if repeat == 1 else f"{pdf_name} (run {run_idx})"
 
@@ -386,6 +391,20 @@ def evaluate_single_model(
                         "validation_issues": issue_codes,
                         "wrong_fields": list(FIELDS_TO_EVALUATE),
                         "mismatches": list(FIELDS_TO_EVALUATE),
+                    })
+                    raw_records.append({
+                        "invoice": pdf_name,
+                        "model": model_name,
+                        "extracted_json": {},
+                        "latency": wall_latency_sec,
+                        "tokens": {
+                            "input_tokens": 0,
+                            "output_tokens": 0,
+                            "total_tokens": 0,
+                        },
+                        "validation_issues": raw_issues,
+                        "pipeline_status": doc.status,
+                        "ground_truth": ground_truth,
                     })
                     invoice_repeat_runs[pdf_name].append({})
                     if should_debug:
@@ -451,6 +470,20 @@ def evaluate_single_model(
                     "validation_issues": issue_codes,
                     "wrong_fields": list(mismatches),
                     "mismatches": mismatches,
+                })
+                raw_records.append({
+                    "invoice": pdf_name,
+                    "model": model_name,
+                    "extracted_json": extracted_data,
+                    "latency": latency_s,
+                    "tokens": {
+                        "input_tokens": extraction.input_tokens or 0,
+                        "output_tokens": extraction.output_tokens or 0,
+                        "total_tokens": total_tokens,
+                    },
+                    "validation_issues": raw_issues,
+                    "pipeline_status": doc.status,
+                    "ground_truth": ground_truth,
                 })
 
                 if should_debug:
@@ -562,6 +595,7 @@ def evaluate_single_model(
         "field_accuracies": field_accuracy_pct,
         "field_mistakes": field_mistake_counts,
         "invoice_results": all_run_results,
+        "raw_records": raw_records,
     }
 
 
@@ -835,6 +869,12 @@ def main():
         help="Path to write evaluation markdown report",
     )
     parser.add_argument(
+        "--save-raw",
+        type=str,
+        default=None,
+        help="Path to save raw evaluation data JSON (e.g. 'eval_raw/eval_raw.json')",
+    )
+    parser.add_argument(
         "--debug",
         type=int,
         nargs="?",
@@ -896,6 +936,25 @@ def main():
     with open(out_path, "w", encoding="utf-8") as f:
         f.write(md_report)
     print(f"Detailed evaluation markdown report written to: {out_path.resolve()}\n")
+
+    # Save raw records output
+    if args.save_raw:
+        all_raw_records = []
+        for r in results_all_models:
+            all_raw_records.extend(r.get("raw_records", []))
+        raw_path = Path(args.save_raw)
+        raw_path.parent.mkdir(parents=True, exist_ok=True)
+        with open(raw_path, "w", encoding="utf-8") as f:
+            json.dump(
+                {
+                    "models": models_list,
+                    "records": all_raw_records,
+                },
+                f,
+                indent=2,
+                default=str,
+            )
+        print(f"Raw evaluation data written to: {raw_path.resolve()}\n")
 
 
 if __name__ == "__main__":
