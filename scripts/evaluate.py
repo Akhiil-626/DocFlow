@@ -394,9 +394,13 @@ def evaluate_single_model(
                     })
                     raw_records.append({
                         "invoice": pdf_name,
+                        "filename": inv_display_name,
                         "model": model_name,
                         "extracted_json": {},
                         "latency": wall_latency_sec,
+                        "latency_seconds": wall_latency_sec,
+                        "input_tokens": 0,
+                        "output_tokens": 0,
                         "tokens": {
                             "input_tokens": 0,
                             "output_tokens": 0,
@@ -473,9 +477,13 @@ def evaluate_single_model(
                 })
                 raw_records.append({
                     "invoice": pdf_name,
+                    "filename": inv_display_name,
                     "model": model_name,
                     "extracted_json": extracted_data,
                     "latency": latency_s,
+                    "latency_seconds": latency_s,
+                    "input_tokens": extraction.input_tokens or 0,
+                    "output_tokens": extraction.output_tokens or 0,
                     "tokens": {
                         "input_tokens": extraction.input_tokens or 0,
                         "output_tokens": extraction.output_tokens or 0,
@@ -818,6 +826,26 @@ def print_console_summary(eval_results: list[dict[str, Any]], hardware_note: str
     print("=" * 90 + "\n")
 
 
+def save_raw_evaluation_data(
+    raw_file_path: Path | str,
+    models: list[str],
+    raw_records: list[dict[str, Any]],
+) -> None:
+    """Save raw evaluation records for offline simulation, creating directories as needed."""
+    raw_path = Path(raw_file_path)
+    raw_path.parent.mkdir(parents=True, exist_ok=True)
+    with open(raw_path, "w", encoding="utf-8") as f:
+        json.dump(
+            {
+                "models": models,
+                "records": raw_records,
+            },
+            f,
+            indent=2,
+            default=str,
+        )
+
+
 def main():
     parser = argparse.ArgumentParser(description="Evaluate DocFlow extraction pipeline with local models.")
     parser.add_argument(
@@ -942,19 +970,8 @@ def main():
         all_raw_records = []
         for r in results_all_models:
             all_raw_records.extend(r.get("raw_records", []))
-        raw_path = Path(args.save_raw)
-        raw_path.parent.mkdir(parents=True, exist_ok=True)
-        with open(raw_path, "w", encoding="utf-8") as f:
-            json.dump(
-                {
-                    "models": models_list,
-                    "records": all_raw_records,
-                },
-                f,
-                indent=2,
-                default=str,
-            )
-        print(f"Raw evaluation data written to: {raw_path.resolve()}\n")
+        save_raw_evaluation_data(args.save_raw, models_list, all_raw_records)
+        print(f"Raw evaluation data written to: {Path(args.save_raw).resolve()}\n")
 
 
 if __name__ == "__main__":

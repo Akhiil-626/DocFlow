@@ -10,6 +10,7 @@ from typing import Any
 
 import pytest
 
+from scripts.evaluate import save_raw_evaluation_data
 from scripts.simulate_routing import (
     DEFAULT_ESCALATE_CODES,
     DEFAULT_SKIP_DOCUMENT_CODES,
@@ -18,6 +19,7 @@ from scripts.simulate_routing import (
     group_records_by_invoice,
     is_critical_fields_correct,
     is_invoice_all_correct,
+    load_raw_records,
     run_simulation,
     simulate_policy,
 )
@@ -269,3 +271,78 @@ def test_run_simulation_and_table_format(tmp_path, sample_ground_truth):
     assert lines[0].startswith("| Policy |")
     assert "P1: Small model only" in content
     assert "P5: P4 + skip document issues" in content
+
+
+def test_save_raw_evaluation_data_and_load_through_simulator_loader(tmp_path):
+    """Test writing a raw evaluation file and loading it back through load_raw_records."""
+    raw_path = tmp_path / "eval_raw" / "nested_dir" / "test_raw.json"
+    fake_records = [
+        {
+            "invoice": "invoice_01.pdf",
+            "filename": "invoice_01.pdf",
+            "model": "llama3.2:3b",
+            "extracted_json": {"invoice_number": "INV-001", "total": "1180.00"},
+            "latency": 18.5,
+            "latency_seconds": 18.5,
+            "input_tokens": 1050,
+            "output_tokens": 120,
+            "tokens": {
+                "input_tokens": 1050,
+                "output_tokens": 120,
+                "total_tokens": 1170,
+            },
+            "validation_issues": [
+                {"code": "TOTAL_MISMATCH", "severity": "error", "field": "total"}
+            ],
+            "pipeline_status": "needs_review",
+            "ground_truth": {"invoice_number": "INV-001", "total": "1180.00"},
+        },
+        {
+            "invoice": "invoice_01.pdf",
+            "filename": "invoice_01.pdf",
+            "model": "llama3.1:8b",
+            "extracted_json": {"invoice_number": "INV-001", "total": "1180.00"},
+            "latency": 42.1,
+            "latency_seconds": 42.1,
+            "input_tokens": 1045,
+            "output_tokens": 115,
+            "tokens": {
+                "input_tokens": 1045,
+                "output_tokens": 115,
+                "total_tokens": 1160,
+            },
+            "validation_issues": [],
+            "pipeline_status": "auto_approved",
+            "ground_truth": {"invoice_number": "INV-001", "total": "1180.00"},
+        },
+    ]
+
+    # Writing must create parent directories if needed
+    save_raw_evaluation_data(raw_path, ["llama3.2:3b", "llama3.1:8b"], fake_records)
+    assert raw_path.exists()
+
+    # Load back through simulator loader
+    loaded_records = load_raw_records(raw_path)
+    assert len(loaded_records) == 2
+
+    # Verify field values match
+    for expected, actual in zip(fake_records, loaded_records):
+        assert actual["invoice"] == expected["invoice"]
+        assert actual["model"] == expected["model"]
+        assert actual["extracted_json"] == expected["extracted_json"]
+        assert actual["latency"] == expected["latency"]
+        assert actual["latency_seconds"] == expected["latency_seconds"]
+        assert actual["input_tokens"] == expected["input_tokens"]
+        assert actual["output_tokens"] == expected["output_tokens"]
+        assert actual["tokens"] == expected["tokens"]
+        assert actual["validation_issues"] == expected["validation_issues"]
+        assert actual["pipeline_status"] == expected["pipeline_status"]
+
+    # Verify simulator's grouping works with the loaded records
+    sm, lm, grouped = group_records_by_invoice(loaded_records)
+    assert sm == "llama3.2:3b"
+    assert lm == "llama3.1:8b"
+    assert "invoice_01.pdf" in grouped
+    assert "llama3.2:3b" in grouped["invoice_01.pdf"]
+    assert "llama3.1:8b" in grouped["invoice_01.pdf"]
+
