@@ -509,20 +509,21 @@ class OllamaLLMClient(LLMClient):
             ) from repair_err
 
 
-def get_llm_client() -> LLMClient:
+def get_llm_client(model_name: str | None = None) -> LLMClient:
     """Factory function returning configured LLM client."""
     provider = settings.LLM_PROVIDER.lower()
+    chosen_model = model_name or settings.LLM_MODEL
     if provider == "gemini":
         if not settings.LLM_API_KEY:
             logger.warning("LLM_API_KEY missing for Gemini provider, falling back to mock provider")
-            return MockLLMClient(model_name="mock-model")
-        return GeminiLLMClient(api_key=settings.LLM_API_KEY, model_name=settings.LLM_MODEL)
+            return MockLLMClient(model_name=chosen_model or "mock-model")
+        return GeminiLLMClient(api_key=settings.LLM_API_KEY, model_name=chosen_model)
     if provider == "ollama":
         return OllamaLLMClient(
             base_url=settings.OLLAMA_BASE_URL,
-            model_name=settings.LLM_MODEL or "llama3",
+            model_name=chosen_model or "llama3",
             timeout_seconds=settings.OLLAMA_TIMEOUT_SECONDS,
             num_ctx=settings.OLLAMA_NUM_CTX,
         )
 
-    return MockLLMClient(model_name="mock-model")
+    return MockLLMClient(model_name=chosen_model or "mock-model")

@@ -205,6 +205,22 @@ class AuditLogListResponse(BaseModel):
     offset: int
 
 
+class ExtractionAttemptResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: uuid.UUID
+    document_id: uuid.UUID
+    org_id: uuid.UUID
+    attempt_no: int
+    model: str
+    input_tokens: int | None = None
+    output_tokens: int | None = None
+    latency_ms: int
+    validation_error_codes: list[str] = Field(default_factory=list)
+    escalation_reason: str | None = None
+    created_at: datetime
+
+
 class ExtractionResponse(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
@@ -223,6 +239,7 @@ class ExtractionResponse(BaseModel):
     created_at: datetime
     line_items: list[LineItemResponse] = Field(default_factory=list)
     validation_issues: list[ValidationIssueResponse] = Field(default_factory=list)
+    attempts: list[ExtractionAttemptResponse] = Field(default_factory=list)
 
 
 class DocumentResponse(BaseModel):
@@ -291,4 +308,7 @@ class StatsResponse(BaseModel):
     rejected_count: int = 0
     correction_rate: float = 0.0
     top_corrected_fields: list[TopFieldCorrection] = Field(default_factory=list)
+    escalation_rate: float = 0.0
+    attempts_by_model: dict[str, int] = Field(default_factory=dict)
+    average_latency_by_model: dict[str, float] = Field(default_factory=dict)
 

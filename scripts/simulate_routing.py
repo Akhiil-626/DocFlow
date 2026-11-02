@@ -26,24 +26,16 @@ from app.evaluation_metrics import (
     compare_field,
     normalize_money,
 )
+from app.routing import (
+    DEFAULT_ROUTING_ESCALATE_CODES,
+    DOCUMENT_CODES,
+    compare_line_item_amounts,
+    get_critical_fields_diff,
+)
 
-DEFAULT_ESCALATE_CODES = [
-    "TOTAL_MISMATCH",
-    "LINE_ITEM_AMOUNT_MISMATCH",
-    "LINE_ITEMS_SUM_MISMATCH",
-    "MISSING_VENDOR_NAME",
-    "MISSING_INVOICE_NUMBER",
-    "NO_LINE_ITEMS",
-]
+DEFAULT_ESCALATE_CODES = DEFAULT_ROUTING_ESCALATE_CODES
 
-DEFAULT_SKIP_DOCUMENT_CODES = [
-    "FUTURE_INVOICE_DATE",
-    "OLD_INVOICE_DATE",
-    "DUPLICATE_SUSPECTED",
-    "MISSING_GSTIN",
-    "EXACT_DUPLICATE",
-    "SEMANTIC_DUPLICATE",
-]
+DEFAULT_SKIP_DOCUMENT_CODES = sorted(DOCUMENT_CODES)
 
 FIELDS_TO_EVALUATE = [
     "vendor_name",

@@ -17,6 +17,6 @@ celery_app.conf.update(
     enable_utc=True,
     task_acks_late=True,
     task_reject_on_worker_lost=True,
-    task_time_limit=120,
-    task_soft_time_limit=90,
+    task_time_limit=int(2 * settings.OLLAMA_TIMEOUT_SECONDS + 60),
+    task_soft_time_limit=int(2 * settings.OLLAMA_TIMEOUT_SECONDS + 30),
 )

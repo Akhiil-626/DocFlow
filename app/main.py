@@ -9,7 +9,7 @@ from app.config import settings
 from app.db import get_db
 from app.deps import require_role
 from app.diff import compute_extraction_diff
-from app.models import Document, Extraction, User
+from app.models import Document, Extraction, ExtractionAttempt, User
 from app.routers import audit, auth, documents, exports
 from app.schemas import StatsResponse, TopFieldCorrection
 
@@ -114,6 +114,41 @@ def get_stats(
         for k, v in field_counter.most_common(5)
     ]
 
+    # Model routing metrics
+    doc_attempt_counts = (
+        db.query(ExtractionAttempt.document_id, func.count(ExtractionAttempt.id))
+        .filter(ExtractionAttempt.org_id == current_user.org_id)
+        .group_by(ExtractionAttempt.document_id)
+        .all()
+    )
+    total_docs_with_attempts = len(doc_attempt_counts)
+    escalated_docs_count = len([d for d, count in doc_attempt_counts if count > 1])
+    escalation_rate = (
+        round(escalated_docs_count / total_docs_with_attempts, 4)
+        if total_docs_with_attempts > 0
+        else 0.0
+    )
+
+    model_attempt_rows = (
+        db.query(ExtractionAttempt.model, func.count(ExtractionAttempt.id))
+        .filter(ExtractionAttempt.org_id == current_user.org_id)
+        .group_by(ExtractionAttempt.model)
+        .all()
+    )
+    attempts_by_model = {model: count for model, count in model_attempt_rows}
+
+    model_latency_rows = (
+        db.query(ExtractionAttempt.model, func.avg(ExtractionAttempt.latency_ms))
+        .filter(ExtractionAttempt.org_id == current_user.org_id)
+        .group_by(ExtractionAttempt.model)
+        .all()
+    )
+    average_latency_by_model = {
+        model: round(float(avg_lat), 2)
+        for model, avg_lat in model_latency_rows
+        if avg_lat is not None
+    }
+
     return {
         "counts": counts,
         "total": total,
@@ -123,6 +158,9 @@ def get_stats(
         "rejected_count": rejected_count,
         "correction_rate": round(correction_rate, 4),
         "top_corrected_fields": top_5,
+        "escalation_rate": escalation_rate,
+        "attempts_by_model": attempts_by_model,
+        "average_latency_by_model": average_latency_by_model,
     }
 
 

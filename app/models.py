@@ -13,9 +13,11 @@ from sqlalchemy import (
     Numeric,
     String,
     Text,
+    UniqueConstraint,
     Uuid,
     func,
 )
+from sqlalchemy.dialects import postgresql
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db import Base
@@ -240,6 +242,12 @@ class Document(Base):
     validation_issues: Mapped[list["ValidationIssue"]] = relationship(
         "ValidationIssue", back_populates="document", cascade="all, delete-orphan"
     )
+    extraction_attempts: Mapped[list["ExtractionAttempt"]] = relationship(
+        "ExtractionAttempt",
+        back_populates="document",
+        cascade="all, delete-orphan",
+        order_by="ExtractionAttempt.attempt_no.asc()",
+    )
 
 
 class ValidationIssue(Base):
@@ -373,6 +381,47 @@ class LineItem(Base):
     extraction: Mapped["Extraction"] = relationship(
         "Extraction", back_populates="line_items"
     )
+
+
+class ExtractionAttempt(Base):
+    __tablename__ = "extraction_attempts"
+    __table_args__ = (
+        UniqueConstraint("document_id", "attempt_no", name="uq_extraction_attempts_doc_attempt"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
+    document_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid,
+        ForeignKey("documents.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    org_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid,
+        ForeignKey("organizations.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    attempt_no: Mapped[int] = mapped_column(Integer, nullable=False)
+    model: Mapped[str] = mapped_column(String(100), nullable=False, index=True)
+    input_tokens: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    output_tokens: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    latency_ms: Mapped[int] = mapped_column(Integer, nullable=False)
+    validation_error_codes: Mapped[list[str]] = mapped_column(
+        postgresql.ARRAY(String(100)).with_variant(JSON, "sqlite"),
+        nullable=False,
+        default=list,
+    )
+    escalation_reason: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        default=utc_now,
+        server_default=func.now(),
+        nullable=False,
+    )
+
+    document: Mapped["Document"] = relationship("Document", back_populates="extraction_attempts")
+    organization: Mapped["Organization"] = relationship("Organization")
 
 
 class AuditLog(Base):

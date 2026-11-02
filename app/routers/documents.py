@@ -28,6 +28,7 @@ from app.models import (
     AuditLog,
     Document,
     Extraction,
+    ExtractionAttempt,
     LineItem,
     User,
     ValidationIssue,
@@ -411,6 +412,16 @@ def get_document_extraction(
         .all()
     )
 
+    attempts = (
+        db.query(ExtractionAttempt)
+        .filter(
+            ExtractionAttempt.document_id == document.id,
+            ExtractionAttempt.org_id == current_user.org_id,
+        )
+        .order_by(ExtractionAttempt.attempt_no.asc())
+        .all()
+    )
+
     return {
         "id": extraction.id,
         "document_id": extraction.document_id,
@@ -427,6 +438,7 @@ def get_document_extraction(
         "created_at": extraction.created_at,
         "line_items": extraction.line_items,
         "validation_issues": issues,
+        "attempts": attempts,
     }
 
 

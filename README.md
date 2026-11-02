@@ -94,6 +94,46 @@ DocFlow is a multi-tenant invoice-processing backend built with FastAPI, SQLAlch
   - `GET /documents?status=...&has_issues=...`: multi-criteria filtering on document lists.
   - `GET /documents/{id}/extraction`: returns structured extraction along with all persisted validation issues.
 
+### Cost-Aware Model Routing (Policy P4)
+
+DocFlow implements offline-simulated and online-enforced cost-aware model routing to balance latency/compute with extraction accuracy.
+
+#### Policy Overview
+- **Policy P4 (Escalate on ESCALATE_CODES)**: Invoices are first processed with a lightweight, fast Tier-1 model (`llama3.2:3b`). If validation detects model calculation or extraction failures matching configured error codes, the invoice is escalated to a larger Tier-2 model (`llama3.1:8b`).
+- **Default Escalation Codes (`ROUTING_ESCALATE_CODES`)**:
+  - `TOTAL_MISMATCH`: Line items + tax do not sum to total.
+  - `LINE_ITEM_AMOUNT_MISMATCH`: Line item quantity * unit price != amount.
+  - `LINE_ITEMS_SUM_MISMATCH`: Sum of line items != subtotal.
+  - `MISSING_VENDOR_NAME`: Vendor name extraction missing.
+  - `MISSING_INVOICE_NUMBER`: Invoice number missing.
+  - `NO_LINE_ITEMS`: No line items extracted.
+- **Excluded Codes**: Warning-severity validation issues (`CGST_SGST_MISMATCH`, `UNEXPECTED_TAX_RATE`) and document-describing issues (`FUTURE_INVOICE_DATE`, `OLD_INVOICE_DATE`, `DUPLICATE_SUSPECTED`, `MISSING_GSTIN`) never trigger escalation because escalating bad or suspicious documents to larger models wastes compute without improving accuracy.
+
+#### Execution & Worker Lifecycle
+1. **Tier-1 Attempt**: Runs in memory and evaluates validation rules.
+2. **Deterministic Escalation Decision**: Pure function `decide_escalation(issue_codes, attempt_number, elapsed_seconds, config)` decides whether to escalate based on configured codes, max escalations, and wall-clock cap.
+3. **Tier-1 Failure Handling**: If Tier 1 fails permanently (e.g., malformed JSON after repair attempt), the pipeline automatically escalates with reason `"tier1_failed"`.
+4. **Tier-2 Unavailability Fallback**: If Tier 2 fails or times out, the pipeline safely falls back to the Tier-1 extraction, transitions the document to `needs_review`, and sets `review_reason="escalation_unavailable"`.
+5. **Critical Fields Comparison**:
+   - Compares attempts on critical fields: `invoice_number`, `invoice_date`, `subtotal`, `cgst`, `sgst`, `igst`, `total`, and line-item amounts.
+   - If models agree on critical fields and validation still fails, annotates `review_reason` with `"models_agree: likely a document issue"`.
+   - If models disagree, annotates `review_reason` with `"models_disagree: <field names>"`.
+6. **Single Atomic Transaction**: Final extraction, line items, validation issues, and all `extraction_attempts` rows are committed in a single database transaction, preserving idempotency on re-runs.
+7. **Audit Trail**: Logs `action="model_escalated"` recording escalation reason and issue codes only (no invoice text or values).
+
+#### Configuration Settings
+| Setting | Default | Description |
+|---|---|---|
+| `ROUTING_ENABLED` | `false` | Master toggle. When `false`, DocFlow operates with existing single-model behavior. |
+| `ROUTING_MODELS` | `llama3.2:3b,llama3.1:8b` | Ordered comma-separated list of model tiers (tier 1, tier 2, ...). |
+| `ROUTING_MAX_ESCALATIONS` | `1` | Maximum number of model escalations per document. |
+| `ROUTING_MAX_SECONDS_PER_DOCUMENT` | `180` | Wall-clock seconds cap per document; skips escalation once exceeded. |
+| `ROUTING_ESCALATE_CODES` | `TOTAL_MISMATCH,LINE_ITEM_AMOUNT_MISMATCH,LINE_ITEMS_SUM_MISMATCH,MISSING_VENDOR_NAME,MISSING_INVOICE_NUMBER,NO_LINE_ITEMS` | Comma-separated list of validation issue codes that trigger escalation. |
+
+#### Limits of the Evaluation
+- **Synthetic Data**: The baseline measurements and routing simulation were conducted on synthetic invoices (20 samples, 10 deliberately corrupted or problematic). Real-world invoice layouts, scan artifacts, and font variances may present different error distributions.
+- **Small Sample Size**: The 20-sample evaluation set provides targeted regression coverage for Indian GST invoice structures, but latency percentiles (median and p95) and escalation frequencies should be re-benchmarked against representative production batches.
+
 ---
 
 ## Quickstart

@@ -70,7 +70,7 @@ def setup_test_db():
         with conn.begin():
             conn.execute(
                 text(
-                    "DROP TABLE IF EXISTS export_batches, validation_issues, line_items, extractions, "
+                    "DROP TABLE IF EXISTS extraction_attempts, export_batches, validation_issues, line_items, extractions, "
                     "audit_log, documents, refresh_tokens, users, organizations CASCADE;"
                 )
             )
@@ -85,7 +85,7 @@ def truncate_tables():
         with conn.begin():
             conn.execute(
                 text(
-                    "TRUNCATE TABLE audit_log, export_batches, validation_issues, line_items, extractions, documents, refresh_tokens, users, organizations CASCADE;"
+                    "TRUNCATE TABLE extraction_attempts, audit_log, export_batches, validation_issues, line_items, extractions, documents, refresh_tokens, users, organizations CASCADE;"
                 )
             )
 

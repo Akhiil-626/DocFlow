@@ -1,6 +1,10 @@
 from decimal import Decimal
+from typing import Any
 
+from pydantic import field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+from app.routing import DEFAULT_ROUTING_ESCALATE_CODES
 
 
 class Settings(BaseSettings):
@@ -48,6 +52,26 @@ class Settings(BaseSettings):
 
     # CORS Settings (explicit list, never wildcard with credentials)
     CORS_ORIGINS: str = "http://localhost:5173"
+
+    # Cost-Aware Model Routing Settings
+    ROUTING_ENABLED: bool = False
+    ROUTING_MODELS: str = "llama3.2:3b,llama3.1:8b"
+    ROUTING_MAX_ESCALATIONS: int = 1
+    ROUTING_MAX_SECONDS_PER_DOCUMENT: float = 180.0
+    ROUTING_ESCALATE_CODES: list[str] = list(DEFAULT_ROUTING_ESCALATE_CODES)
+
+    @field_validator("ROUTING_ESCALATE_CODES", mode="before")
+    @classmethod
+    def parse_escalate_codes(cls, val: Any) -> list[str]:
+        if isinstance(val, str):
+            return [c.strip() for c in val.split(",") if c.strip()]
+        if isinstance(val, (list, tuple, set)):
+            return [str(c).strip() for c in val if str(c).strip()]
+        return list(DEFAULT_ROUTING_ESCALATE_CODES)
+
+    @property
+    def routing_models_list(self) -> list[str]:
+        return [m.strip() for m in self.ROUTING_MODELS.split(",") if m.strip()]
 
     @property
     def cors_origins_list(self) -> list[str]:
